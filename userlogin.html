@@ -10,7 +10,7 @@
     <div class="container mt-5">
         <div class="row justify-content-center">
             <div class="col-md-4">
-                <h3 class="text-center">Stock Manager Login</h3>
+                <h3 class="text-center">Login</h3>
                 <form id="loginForm">
                     <div class="mb-3">
                         <label for="username" class="form-label">Username</label>
@@ -27,21 +27,28 @@
     </div>
 
     <script>
+        // Handle login form submission
         document.getElementById('loginForm').addEventListener('submit', function(e) {
             e.preventDefault();
-            const username = document.getElementById('username').value;
-            const password = document.getElementById('password').value;
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value.trim();
 
-            // Sample user credentials
+            // Example user credentials
             const userCredentials = {
-                employee1: 'password123',
-                owner1: 'ownerpass'
+                owner1: 'ownerpass',   // Owner credentials
+                employee1: 'password123' // Employee credentials
             };
 
+            // Verify credentials
             if (userCredentials[username] && userCredentials[username] === password) {
                 const role = username.startsWith('owner') ? 'Owner' : 'Employee';
-                alert(`Welcome, ${role} ${username}!`);
-                // Redirect to respective dashboard (not implemented here)
+
+                // Redirect based on role
+                if (role === 'Owner') {
+                    window.location.href = 'owner_dashboard.html'; // Redirect to Owner Dashboard
+                } else if (role === 'Employee') {
+                    window.location.href = 'employee_dashboard.html'; // Redirect to Employee Dashboard
+                }
             } else {
                 alert('Invalid username or password');
             }
