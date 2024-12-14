@@ -2,18 +2,18 @@ from flask import Flask, render_template, request, redirect, url_for
 
 app = Flask(__name__)
 
-# 模拟用户凭据
+# Simulated user credentials
 user_credentials = {
     "owner": "ownerpass",
     "employee": "employeepass"
 }
 
-# 登录页面
+# Login Page
 @app.route('/')
 def user_login():
     return render_template('userlogin.html')
 
-# 处理登录逻辑
+# Handle login logic
 @app.route('/login', methods=['POST'])
 def login():
     username = request.form['username']
@@ -21,20 +21,20 @@ def login():
     
     if username in user_credentials and user_credentials[username] == password:
         if username == 'owner':
-            # 跳转到 owner_dashboard 路由
+            # Redirect to owner_dashboard route
             return redirect(url_for('owner_dashboard'))
         else:
-            # 跳转到 employee_dashboard 路由
+            # Redirect to employee_dashboard route
             return redirect(url_for('employee_dashboard'))
     else:
         return "Invalid username or password", 401
 
-# Owner Dashboard 页面
+# Owner Dashboard page
 @app.route('/owner_dashboard')
 def owner_dashboard():
     return render_template('owner_dashboard.html')
 
-# Employee Dashboard 页面
+# Employee Dashboard page
 @app.route('/employee_dashboard')
 def employee_dashboard():
     return render_template('employee_dashboard.html')
