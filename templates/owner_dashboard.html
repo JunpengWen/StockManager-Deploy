@@ -10,79 +10,330 @@
     <div class="container mt-5">
         <h1 class="text-center">Owner Dashboard</h1>
         <hr>
-        
-        <!-- Submitted Report Section -->
-        <div class="mb-5">
-            <h3>Submitted Report</h3>
-            <div class="card p-3">
-                <h5>Report Page: Dashboard</h5>
-                <p>Low Stock Items: <span id="lowStockCount">0</span></p>
-                <button class="btn btn-primary" onclick="viewSubmittedReport()">View Submitted Report</button>
-            </div>
-        </div>
 
         <!-- Checklist Section -->
-        <div class="mb-5">
-            <h3>Checklist Submission</h3>
-            <form id="checklistForm" class="card p-3">
+        <div class="card p-3 mt-4">
+            <h4>Owner Checklist - Set Stock Level</h4>
+            <form id="checklistForm">
                 <div class="mb-3">
-                    <label for="itemName" class="form-label">Item Name</label>
-                    <input type="text" class="form-control" id="itemName" placeholder="Enter item name" required>
+                    <label for="categoryDropdown" class="form-label">Select Category</label>
+                    <select class="form-control" id="categoryDropdown" required></select>
                 </div>
                 <div class="mb-3">
-                    <label for="itemQuantity" class="form-label">Quantity</label>
-                    <input type="number" class="form-control" id="itemQuantity" placeholder="Enter quantity" required>
+                    <label for="itemDropdown" class="form-label">Select Item</label>
+                    <select class="form-control" id="itemDropdown" required></select>
                 </div>
-                <button type="submit" class="btn btn-success w-100">Submit</button>
+                <div class="mb-3">
+                    <label for="quantityInput" class="form-label">Set New Stock Level</label>
+                    <input type="number" class="form-control" id="quantityInput" placeholder="Enter new stock level" min="0" required>
+                </div>
+                <button type="submit" class="btn btn-primary w-100">Update Stock</button>
             </form>
         </div>
 
-        <!-- Stock Status Setup Section -->
-        <div>
-            <h3>Stock Status Setup</h3>
-            <div class="list-group">
-                <button class="list-group-item list-group-item-action" onclick="addItem()">Add Item</button>
-                <button class="list-group-item list-group-item-action" onclick="editItems()">Edit Items</button>
-                <button class="list-group-item list-group-item-action" onclick="editCategory()">Edit Category</button>
-                <button class="list-group-item list-group-item-action" onclick="setStockLevel()">Set In-Stock Level</button>
+        <hr>
+
+        <!-- Navigation -->
+        <div class="list-group mb-3">
+            <button class="list-group-item list-group-item-action" onclick="showAddItemForm()">Add Item</button>
+            <button class="list-group-item list-group-item-action" onclick="showEditCategoryForm()">Edit Category</button>
+        </div>
+
+        <!-- Add Item Form -->
+        <div id="addItemForm" class="card p-3">
+            <h4>Add New Item</h4>
+            <form method="POST" action="/owner_dashboard">
+                <div class="mb-3">
+                    <label for="name" class="form-label">Item Name</label>
+                    <input type="text" class="form-control" id="name" name="name" required>
+                </div>
+                <div class="mb-3">
+                    <label for="category" class="form-label">Category</label>
+                    <select class="form-control" id="category" name="category" required></select>
+                </div>
+                <div class="mb-3">
+                    <label for="max_stock_level" class="form-label">Max Stock Level</label>
+                    <input type="number" class="form-control" id="max_stock_level" name="max_stock_level" min="0" required>
+                </div>
+                <div class="mb-3">
+                    <label for="in_stock_level" class="form-label">In-Stock Level</label>
+                    <input type="number" class="form-control" id="in_stock_level" name="in_stock_level" min="0" required>
+                </div>
+                <div class="mb-3">
+                    <label for="reorder_level" class="form-label">Reorder Level</label>
+                    <input type="number" class="form-control" id="reorder_level" name="reorder_level" min="0" required>
+                </div>
+                <button type="submit" class="btn btn-success w-100">Save Item</button>
+            </form>
+        </div>
+
+        <!-- Edit Categories -->
+        <div id="editCategoryForm" class="card p-3 d-none">
+            <h4>Edit Categories</h4>
+            <textarea class="form-control mb-3" id="categoriesList" rows="5"></textarea>
+            <button class="btn btn-primary w-100" onclick="saveCategories()">Save Categories</button>
+        </div>
+
+        <!-- Item List -->
+        <table class="table table-striped">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Name</th>
+                    <th>Category</th>
+                    <th>Max Stock Level</th>
+                    <th>In-Stock Level</th>
+                    <th>Reorder Level</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="itemTableBody"></tbody>
+        </table>
+
+        <!-- Edit Item Modal -->
+        <div class="modal fade" id="editItemModal" tabindex="-1">
+            <div class="modal-dialog">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Edit Item</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <form id="editItemForm">
+                            <input type="hidden" id="editItemID">
+                            <div class="mb-3">
+                                <label for="editItemCategoryDropdown" class="form-label">Category</label>
+                                <select class="form-control" id="editItemCategoryDropdown" required></select>
+                            </div>
+                            <div class="mb-3">
+                                <label for="editMaxStock" class="form-label">Max Stock Level</label>
+                                <input type="number" class="form-control" id="editMaxStock" min="0" required>
+                            </div>
+                            <div class="mb-3">
+                                <label for="editInStock" class="form-label">In-Stock Level</label>
+                                <input type="number" class="form-control" id="editInStock" min="0" required>
+                            </div>
+                            <div class="mb-3">
+                                <label for="editReorderLevel" class="form-label">Reorder Level</label>
+                                <input type="number" class="form-control" id="editReorderLevel" min="0" required>
+                            </div>
+                            <button type="submit" class="btn btn-success w-100">Save Changes</button>
+                        </form>
+                    </div>
+                </div>
             </div>
+        </div>
+
+        <!-- Exit -->
+        <div class="text-center mt-5">
+            <a href="/" class="btn btn-danger">Exit</a>
         </div>
     </div>
 
+    <!-- JavaScript -->
     <script>
-        // Functions for Submitted Report
-        function viewSubmittedReport() {
-            alert("Viewing Submitted Report functionality is not implemented yet.");
+        // Fetch items and populate the table
+        async function fetchItems() {
+            const response = await fetch('/items');
+            const items = await response.json();
+
+            const itemTableBody = document.getElementById('itemTableBody');
+            itemTableBody.innerHTML = '';
+
+            items.forEach(item => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>${item.id}</td>
+                    <td>${item.name}</td>
+                    <td>${item.category}</td>
+                    <td>${item.max_stock_level}</td>
+                    <td>${item.in_stock_level}</td>
+                    <td>${item.reorder_level}</td>
+                    <td>
+                        <button class="btn btn-primary btn-sm" onclick='openEditModal(${JSON.stringify(item)})'>Edit Item</button>
+                        <button class="btn btn-danger btn-sm" onclick="deleteItem(${item.id})">Delete</button>
+                    </td>
+                `;
+                itemTableBody.appendChild(row);
+            });
         }
 
-        // Checklist Submission Logic
-        document.getElementById('checklistForm').addEventListener('submit', function(e) {
+        // Open Edit Item Modal
+        async function openEditModal(item) {
+            // Fetch categories
+            const response = await fetch('/categories');
+            const categories = await response.json();
+            const categoryDropdown = document.getElementById('editItemCategoryDropdown');
+
+            // Populate the dropdown
+            categoryDropdown.innerHTML = '<option value="">-- Select Category --</option>';
+            categories.forEach(category => {
+                const option = document.createElement('option');
+                option.value = category;
+                option.textContent = category;
+                categoryDropdown.appendChild(option);
+            });
+
+            // Set current values in the form
+            document.getElementById('editItemID').value = item.id;
+            document.getElementById('editItemCategoryDropdown').value = item.category; // Pre-select current category
+            document.getElementById('editMaxStock').value = item.max_stock_level;
+            document.getElementById('editInStock').value = item.in_stock_level;
+            document.getElementById('editReorderLevel').value = item.reorder_level;
+
+            // Show the modal
+            const editItemModal = new bootstrap.Modal(document.getElementById('editItemModal'));
+            editItemModal.show();
+        }
+
+        // Submit Edit Item Form
+        document.getElementById('editItemForm').addEventListener('submit', async function (e) {
             e.preventDefault();
-            const itemName = document.getElementById('itemName').value;
-            const itemQuantity = document.getElementById('itemQuantity').value;
 
-            alert(`Item "${itemName}" with quantity "${itemQuantity}" has been submitted successfully!`);
+            const itemId = document.getElementById('editItemID').value; // Get the hidden ID
+            const updatedData = {
+                category: document.getElementById('editItemCategoryDropdown').value,
+                max_stock_level: parseInt(document.getElementById('editMaxStock').value),
+                in_stock_level: parseInt(document.getElementById('editInStock').value),
+                reorder_level: parseInt(document.getElementById('editReorderLevel').value),
+            };
 
-            // Clear the form after submission
-            document.getElementById('checklistForm').reset();
+            const response = await fetch(`/update_item/${itemId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(updatedData),
+            });
+
+            const result = await response.json();
+            if (response.ok) {
+                alert(result.message);
+                fetchItems(); // Refresh the item list
+            } else {
+                alert(`Error: ${result.message}`);
+            }
         });
 
-        // Functions for Stock Status Setup
-        function addItem() {
-            alert("Add Item functionality is not implemented yet.");
+
+        // Delete Item
+        async function deleteItem(itemId) {
+            if (confirm('Are you sure you want to delete this item?')) {
+                const response = await fetch(`/delete_item/${itemId}`, { method: 'POST' });
+
+                if (response.ok) {
+                    alert('Item deleted successfully!');
+                    fetchItems();
+                } else {
+                    alert('Failed to delete item.');
+                }
+            }
         }
 
-        function editItems() {
-            alert("Edit Items functionality is not implemented yet.");
+        // Save categories
+        async function saveCategories() {
+            const categories = document.getElementById('categoriesList').value
+                .split('\n')
+                .map(c => c.trim())
+                .filter(c => c);
+
+            const response = await fetch('/categories', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ categories }),
+            });
+
+            if (response.ok) {
+                alert('Categories updated successfully!');
+                fetchCategories();
+                showAddItemForm();
+            } else {
+                alert('Failed to save categories.');
+            }
         }
 
-        function editCategory() {
-            alert("Edit Category functionality is not implemented yet.");
+        // Fetch categories and populate dropdowns
+        async function fetchCategories() {
+            const response = await fetch('/categories');
+            const categories = await response.json();
+
+            const categoryDropdowns = [document.getElementById('category'), document.getElementById('categoryDropdown')];
+            categoryDropdowns.forEach(dropdown => {
+                dropdown.innerHTML = '<option value="">-- Select Category --</option>';
+                categories.forEach(category => {
+                    const option = document.createElement('option');
+                    option.value = category;
+                    option.textContent = category;
+                    dropdown.appendChild(option);
+                });
+            });
+
+            document.getElementById('categoriesList').value = categories.join('\n');
         }
 
-        function setStockLevel() {
-            alert("Set In-Stock Level functionality is not implemented yet.");
+        // Fetch items by category for the checklist
+        async function fetchItemsByCategory(category) {
+            const response = await fetch('/items');
+            const items = await response.json();
+            const filteredItems = items.filter(item => item.category === category);
+
+            const itemDropdown = document.getElementById('itemDropdown');
+            itemDropdown.innerHTML = '<option value="">-- Select Item --</option>';
+            filteredItems.forEach(item => {
+                const option = document.createElement('option');
+                option.value = item.id;
+                option.textContent = `${item.name} (Current Stock: ${item.in_stock_level})`;
+                itemDropdown.appendChild(option);
+            });
         }
+
+        // Handle Checklist Form Submission
+        document.getElementById('checklistForm').addEventListener('submit', async function (e) {
+            e.preventDefault();
+
+            const itemId = document.getElementById('itemDropdown').value;
+            const newStockLevel = parseInt(document.getElementById('quantityInput').value);
+
+            if (!itemId || isNaN(newStockLevel) || newStockLevel < 0) {
+                alert("Please enter a valid stock level.");
+                return;
+            }
+
+            const response = await fetch(`/set_stock_level/${itemId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ in_stock_level: newStockLevel }),
+            });
+
+            const result = await response.json();
+            alert(result.message);
+            fetchItemsByCategory(document.getElementById('categoryDropdown').value);
+        });
+
+        // Toggle forms
+        function showAddItemForm() {
+            document.getElementById('addItemForm').classList.remove('d-none');
+            document.getElementById('editCategoryForm').classList.add('d-none');
+        }
+
+        function showEditCategoryForm() {
+            document.getElementById('editCategoryForm').classList.remove('d-none');
+            document.getElementById('addItemForm').classList.add('d-none');
+        }
+
+        // Event listener for category dropdown changes
+        document.getElementById('categoryDropdown').addEventListener('change', function () {
+            const selectedCategory = this.value;
+            if (selectedCategory) {
+                fetchItemsByCategory(selectedCategory);
+            } else {
+                document.getElementById('itemDropdown').innerHTML = '<option value="">-- Select Item --</option>';
+            }
+        });
+
+        // Initialize
+        fetchItems();
+        fetchCategories();
     </script>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>

@@ -12,36 +12,179 @@
         <hr>
 
         <!-- Checklist Submission Section -->
-        <div class="mb-5">
-            <h3>Checklist Submission</h3>
-            <form id="checklistForm" class="card p-3">
+        <div class="card p-3 mb-5">
+            <h3>Checklist Submission - Set Stock Level</h3>
+            <form id="employeeChecklistForm">
                 <div class="mb-3">
-                    <label for="itemName" class="form-label">Item Name</label>
-                    <input type="text" class="form-control" id="itemName" placeholder="Enter item name" required>
+                    <label for="employeeCategoryDropdown" class="form-label">Select Category</label>
+                    <select class="form-control" id="employeeCategoryDropdown" required></select>
                 </div>
                 <div class="mb-3">
-                    <label for="itemQuantity" class="form-label">Quantity</label>
-                    <input type="number" class="form-control" id="itemQuantity" placeholder="Enter quantity" required>
+                    <label for="employeeItemDropdown" class="form-label">Select Item</label>
+                    <select class="form-control" id="employeeItemDropdown" required></select>
                 </div>
-                <button type="submit" class="btn btn-success w-100">Submit</button>
+                <div class="mb-3">
+                    <label for="employeeStockInput" class="form-label">Set New Stock Level</label>
+                    <input type="number" class="form-control" id="employeeStockInput" placeholder="Enter new stock level" min="0" required>
+                </div>
+                <button type="submit" class="btn btn-primary w-100">Update Stock</button>
             </form>
+        </div>
+
+        <!-- Inventory Audit Section -->
+        <div class="mt-5">
+            <h3>Daily Inventory Check</h3>
+            <table class="table table-striped">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Name</th>
+                        <th>Category</th>
+                        <th>Current Stock</th>
+                        <th>Reorder Level</th>
+                        <th>Corrected Stock</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="auditTableBody">
+                    <!-- Dynamically populated -->
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Exit Section -->
+        <div class="mt-5 text-center">
+            <a href="/" class="btn btn-danger">Exit</a>
         </div>
     </div>
 
     <script>
-        // Checklist Submission Logic
-        document.getElementById('checklistForm').addEventListener('submit', function(e) {
+        // Fetch categories for checklist dropdown
+        async function fetchCategoriesForEmployee() {
+            const response = await fetch('/categories');
+            const categories = await response.json();
+            const categoryDropdown = document.getElementById('employeeCategoryDropdown');
+            categoryDropdown.innerHTML = '<option value="">-- Select Category --</option>';
+            categories.forEach(category => {
+                const option = document.createElement('option');
+                option.value = category;
+                option.textContent = category;
+                categoryDropdown.appendChild(option);
+            });
+        }
+
+        // Fetch items based on selected category
+        async function fetchItemsByCategoryForEmployee(category) {
+            const response = await fetch('/items');
+            const items = await response.json();
+            const filteredItems = items.filter(item => item.category === category);
+
+            const itemDropdown = document.getElementById('employeeItemDropdown');
+            itemDropdown.innerHTML = '<option value="">-- Select Item --</option>';
+            filteredItems.forEach(item => {
+                const option = document.createElement('option');
+                option.value = item.id;
+                option.textContent = `${item.name} (Current Stock: ${item.in_stock_level})`;
+                itemDropdown.appendChild(option);
+            });
+        }
+
+        // Handle checklist form submission
+        document.getElementById('employeeChecklistForm').addEventListener('submit', async function (e) {
             e.preventDefault();
 
-            const itemName = document.getElementById('itemName').value;
-            const itemQuantity = document.getElementById('itemQuantity').value;
+            const itemId = document.getElementById('employeeItemDropdown').value;
+            const newStockLevel = parseInt(document.getElementById('employeeStockInput').value);
 
-            alert(`Item "${itemName}" with quantity "${itemQuantity}" has been submitted successfully!`);
+            if (!itemId || isNaN(newStockLevel) || newStockLevel < 0) {
+                alert("Please fill in all fields correctly.");
+                return;
+            }
 
-            // Clear the form after submission
-            document.getElementById('checklistForm').reset();
+            const response = await fetch(`/set_stock_level/${itemId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ in_stock_level: newStockLevel }),
+            });
+
+            const result = await response.json();
+            if (response.ok) {
+                alert(result.message);
+                fetchItemsByCategoryForEmployee(document.getElementById('employeeCategoryDropdown').value);
+                fetchItemsForAudit(); // Refresh audit table
+            } else {
+                alert(`Error: ${result.message}`);
+            }
+        });
+
+        // Fetch all items for inventory audit table
+        async function fetchItemsForAudit() {
+            const response = await fetch('/items');
+            const items = await response.json();
+
+            const auditTableBody = document.getElementById('auditTableBody');
+            auditTableBody.innerHTML = '';
+            items.forEach(item => {
+                const row = `
+                    <tr>
+                        <td>${item.id}</td>
+                        <td>${item.name}</td>
+                        <td>${item.category}</td>
+                        <td>${item.in_stock_level}</td>
+                        <td>${item.reorder_level}</td>
+                        <td>
+                            <input type="number" id="correctedStock_${item.id}" class="form-control form-control-sm"
+                                   value="${item.in_stock_level}" min="0">
+                        </td>
+                        <td>
+                            <button class="btn btn-primary btn-sm" onclick="updateStock(${item.id})">Update</button>
+                        </td>
+                    </tr>
+                `;
+                auditTableBody.insertAdjacentHTML('beforeend', row);
+            });
+        }
+
+        // Update stock for corrected values
+        async function updateStock(itemId) {
+            const correctedStock = parseInt(document.getElementById(`correctedStock_${itemId}`).value);
+
+            if (correctedStock < 0) {
+                alert("Stock quantity cannot be negative.");
+                return;
+            }
+
+            const response = await fetch(`/set_stock_level/${itemId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ in_stock_level: correctedStock }),
+            });
+
+            if (response.ok) {
+                alert("Stock updated successfully!");
+                fetchItemsForAudit();
+            } else {
+                alert("Failed to update stock.");
+            }
+        }
+
+        // Initialize category and audit table on page load
+        document.addEventListener('DOMContentLoaded', () => {
+            fetchCategoriesForEmployee();
+            fetchItemsForAudit();
+        });
+
+        // Event listener for category dropdown change
+        document.getElementById('employeeCategoryDropdown').addEventListener('change', function () {
+            const selectedCategory = this.value;
+            if (selectedCategory) {
+                fetchItemsByCategoryForEmployee(selectedCategory);
+            } else {
+                document.getElementById('employeeItemDropdown').innerHTML = '<option value="">-- Select Item --</option>';
+            }
         });
     </script>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
-
