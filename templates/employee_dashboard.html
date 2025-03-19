@@ -5,186 +5,259 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Employee Dashboard</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        /* Custom styles for store-specific filtering */
+        .store-header {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+        .store-indicator {
+            font-weight: bold;
+            color: #0d6efd;
+        }
+        .category-filter {
+            max-width: 300px;
+            margin: 0 auto 20px;
+        }
+        /* Custom styles for mobile responsiveness */
+        .table-responsive {
+            overflow-x: auto;
+        }
+        .table td, .table th {
+            white-space: nowrap;
+        }
+        .btn {
+            width: 100%;
+            margin-bottom: 10px;
+        }
+        .card {
+            margin-bottom: 20px;
+        }
+    </style>
 </head>
 <body>
-    <div class="container mt-5">
-        <h1 class="text-center">Employee Dashboard</h1>
-        <hr>
+<div class="container mt-3">
+    <!-- Store information header -->
+    <div class="store-header text-center">
+        <h3 class="store-indicator" id="currentStore"></h3>
+    </div>
 
-        <!-- Checklist Submission Section -->
-        <div class="card p-3 mb-5">
-            <h3>Checklist Submission - Set Stock Level</h3>
-            <form id="employeeChecklistForm">
-                <div class="mb-3">
-                    <label for="employeeCategoryDropdown" class="form-label">Select Category</label>
-                    <select class="form-control" id="employeeCategoryDropdown" required></select>
-                </div>
-                <div class="mb-3">
-                    <label for="employeeItemDropdown" class="form-label">Select Item</label>
-                    <select class="form-control" id="employeeItemDropdown" required></select>
-                </div>
-                <div class="mb-3">
-                    <label for="employeeStockInput" class="form-label">Set New Stock Level</label>
-                    <input type="number" class="form-control" id="employeeStockInput" placeholder="Enter new stock level" min="0" required>
-                </div>
-                <button type="submit" class="btn btn-primary w-100">Update Stock</button>
-            </form>
-        </div>
+    <!-- Category Selection Section -->
+    <div class="card p-3 mb-3">
+        <h3>Employee Checklist</h3>
+        <form id="employeeChecklistForm">
+            <div class="mb-3 category-filter">
+                <label for="employeeCategoryDropdown" class="form-label">Select Category</label>
+                <select class="form-control" id="employeeCategoryDropdown" required>
+                    <option value="" disabled selected>-- Filter by Category --</option>
+                </select>
+            </div>
+        </form>
+    </div>
 
-        <!-- Inventory Audit Section -->
-        <div class="mt-5">
-            <h3>Daily Inventory Check</h3>
+    <!-- Inventory Audit Section -->
+    <div id="inventoryCheckSection" class="mt-3 d-none">
+        <h3>Daily Inventory Check</h3>
+        <div class="table-responsive">
             <table class="table table-striped">
                 <thead>
-                    <tr>
-                        <th>ID</th>
-                        <th>Name</th>
-                        <th>Category</th>
-                        <th>Current Stock</th>
-                        <th>Reorder Level</th>
-                        <th>Corrected Stock</th>
-                        <th>Actions</th>
-                    </tr>
+                <tr>
+                    <th>ID</th>
+                    <th>Name</th>
+                    <th>Update Stock</th>
+                    <th>Category</th>
+                    <th>Current Stock</th>
+                    <th>Supplier</th>
+                    <th>Picture</th>
+                </tr>
                 </thead>
                 <tbody id="auditTableBody">
-                    <!-- Dynamically populated -->
+                <!-- Dynamically populated -->
                 </tbody>
             </table>
         </div>
-
-        <!-- Exit Section -->
-        <div class="mt-5 text-center">
-            <a href="/" class="btn btn-danger">Exit</a>
+        <div class="d-flex justify-content-center mt-3">
+            <button class="btn btn-primary" onclick="updateAllStock()">Update All Items</button>
         </div>
     </div>
 
-    <script>
-        // Fetch categories for checklist dropdown
-        async function fetchCategoriesForEmployee() {
-            const response = await fetch('/categories');
-            const categories = await response.json();
+    <!-- Exit Section -->
+    <div class="mt-3 text-center">
+        <a href="/" class="btn btn-danger" onclick="confirmExit()">Exit</a>
+    </div>
+</div>
+
+<!-- JavaScript -->
+<script>
+    // Initialize store info from server template
+    const currentStore = "{{ session.store_address }}";  // Get from server session
+
+    // Set visual indicators
+    document.getElementById('currentStore').textContent = currentStore.split(',')[0] || "Current Store";
+    sessionStorage.removeItem('currentStore');  // Remove legacy storage
+
+    // Fetch store-specific categories
+    async function fetchCategoriesForEmployee() {
+        try {
+            const response = await fetch('/items');
+            const items = await response.json();
+
+            // Get unique categories from current store's items
+            const categories = [...new Set(items.map(item => item.category))]
+                               .filter(c => c).sort();
+
             const categoryDropdown = document.getElementById('employeeCategoryDropdown');
-            categoryDropdown.innerHTML = '<option value="">-- Select Category --</option>';
+            categoryDropdown.innerHTML = '<option value="" disabled selected>-- Filter by Category --</option>';
+
             categories.forEach(category => {
                 const option = document.createElement('option');
                 option.value = category;
                 option.textContent = category;
                 categoryDropdown.appendChild(option);
             });
+
+        } catch (error) {
+            console.error('Error loading categories:', error);
+        }
+    }
+
+    // Fetch store-specific items for selected category
+    async function fetchItemsForSelectedCategory(category) {
+        if (!category) {
+            document.getElementById('inventoryCheckSection').classList.add('d-none');
+            return;
         }
 
-        // Fetch items based on selected category
-        async function fetchItemsByCategoryForEmployee(category) {
+        try {
             const response = await fetch('/items');
             const items = await response.json();
             const filteredItems = items.filter(item => item.category === category);
 
-            const itemDropdown = document.getElementById('employeeItemDropdown');
-            itemDropdown.innerHTML = '<option value="">-- Select Item --</option>';
-            filteredItems.forEach(item => {
-                const option = document.createElement('option');
-                option.value = item.id;
-                option.textContent = `${item.name} (Current Stock: ${item.in_stock_level})`;
-                itemDropdown.appendChild(option);
-            });
-        }
-
-        // Handle checklist form submission
-        document.getElementById('employeeChecklistForm').addEventListener('submit', async function (e) {
-            e.preventDefault();
-
-            const itemId = document.getElementById('employeeItemDropdown').value;
-            const newStockLevel = parseInt(document.getElementById('employeeStockInput').value);
-
-            if (!itemId || isNaN(newStockLevel) || newStockLevel < 0) {
-                alert("Please fill in all fields correctly.");
-                return;
-            }
-
-            const response = await fetch(`/set_stock_level/${itemId}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ in_stock_level: newStockLevel }),
-            });
-
-            const result = await response.json();
-            if (response.ok) {
-                alert(result.message);
-                fetchItemsByCategoryForEmployee(document.getElementById('employeeCategoryDropdown').value);
-                fetchItemsForAudit(); // Refresh audit table
-            } else {
-                alert(`Error: ${result.message}`);
-            }
-        });
-
-        // Fetch all items for inventory audit table
-        async function fetchItemsForAudit() {
-            const response = await fetch('/items');
-            const items = await response.json();
-
             const auditTableBody = document.getElementById('auditTableBody');
             auditTableBody.innerHTML = '';
-            items.forEach(item => {
-                const row = `
+
+            if (filteredItems.length === 0) {
+                auditTableBody.innerHTML = `
                     <tr>
-                        <td>${item.id}</td>
-                        <td>${item.name}</td>
-                        <td>${item.category}</td>
-                        <td>${item.in_stock_level}</td>
-                        <td>${item.reorder_level}</td>
-                        <td>
-                            <input type="number" id="correctedStock_${item.id}" class="form-control form-control-sm"
-                                   value="${item.in_stock_level}" min="0">
-                        </td>
-                        <td>
-                            <button class="btn btn-primary btn-sm" onclick="updateStock(${item.id})">Update</button>
+                        <td colspan="7" class="text-center text-muted">
+                            No items in this category for ${currentStore}
                         </td>
                     </tr>
                 `;
-                auditTableBody.insertAdjacentHTML('beforeend', row);
-            });
-        }
+            } else {
+                filteredItems.forEach(item => {
+                    const row = `
+                        <tr>
+                            <td>${item.id}</td>
+                            <td>${item.name}</td>
+                            <td>
+                                <input type="number" id="correctedStock_${item.id}"
+                                       class="form-control form-control-sm"
+                                       value="${item.in_stock_level}" min="0">
+                            </td>
+                            <td>${item.category}</td>
+                            <td>${item.in_stock_level}</td>
+                            <td>${item.supplier || 'N/A'}</td>
+                            <td>
+                                ${item.picture ?
+                                    `<img src="${item.picture}" alt="${item.name}"
+                                       style="width: 50px; height: 50px;">` :
+                                    'No Picture'}
+                            </td>
+                        </tr>
+                    `;
+                    auditTableBody.insertAdjacentHTML('beforeend', row);
+                });
+            }
 
-        // Update stock for corrected values
-        async function updateStock(itemId) {
-            const correctedStock = parseInt(document.getElementById(`correctedStock_${itemId}`).value);
+            document.getElementById('inventoryCheckSection').classList.remove('d-none');
+
+        } catch (error) {
+            console.error('Error loading items:', error);
+        }
+    }
+
+    // Update all stock values with store validation
+    async function updateAllStock() {
+        const inputs = document.querySelectorAll('[id^="correctedStock_"]');
+        let storeUpdates = [];
+        let warnings = [];
+
+        // Collect all updates
+        inputs.forEach(input => {
+            const itemId = input.id.split('_')[1];
+            const correctedStock = parseInt(input.value);
 
             if (correctedStock < 0) {
-                alert("Stock quantity cannot be negative.");
+                alert(`Item ID ${itemId}: Stock quantity cannot be negative.`);
                 return;
             }
 
-            const response = await fetch(`/set_stock_level/${itemId}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ in_stock_level: correctedStock }),
+            storeUpdates.push({
+                itemId: itemId,
+                stock: correctedStock
             });
+        });
 
-            if (response.ok) {
-                alert("Stock updated successfully!");
-                fetchItemsForAudit();
-            } else {
-                alert("Failed to update stock.");
+        // Process updates with store validation
+        for (const update of storeUpdates) {
+            try {
+                const response = await fetch(`/set_stock_level/${update.itemId}`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        in_stock_level: update.stock,
+                        store_address: currentStore
+                    }),
+                });
+
+                const data = await response.json();
+                if (response.ok) {
+                    const stockCell = document.querySelector(`#correctedStock_${update.itemId}`)
+                        .closest('tr').querySelector('td:nth-child(5)');
+                    stockCell.textContent = update.stock;
+
+                    if (data.warning && data.warning.message) {  // Modified line
+                        warnings.push(data.warning.message);     // Modified line
+                    }
+                } else {
+                    alert(`Failed to update item ID ${update.itemId}: ${data.message}`);
+                }
+            } catch (error) {
+                console.error('Update error:', error);
+                alert(`Failed to update item ID ${update.itemId}`);
             }
         }
 
-        // Initialize category and audit table on page load
-        document.addEventListener('DOMContentLoaded', () => {
-            fetchCategoriesForEmployee();
-            fetchItemsForAudit();
-        });
+        // Show summary
+        if (warnings.length > 0) {
+            alert("Warnings:\n" + warnings.join('\n'));
+        }
+        if (storeUpdates.length > 0) {
+            alert(`Successfully updated ${storeUpdates.length} items in ${currentStore}!`);
+        }
+    }
 
-        // Event listener for category dropdown change
-        document.getElementById('employeeCategoryDropdown').addEventListener('change', function () {
-            const selectedCategory = this.value;
-            if (selectedCategory) {
-                fetchItemsByCategoryForEmployee(selectedCategory);
-            } else {
-                document.getElementById('employeeItemDropdown').innerHTML = '<option value="">-- Select Item --</option>';
-            }
-        });
-    </script>
+    // Event listener for category dropdown change
+    document.getElementById('employeeCategoryDropdown').addEventListener('change', function () {
+        const selectedCategory = this.value;
+        fetchItemsForSelectedCategory(selectedCategory);
+    });
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha3/dist/js/bootstrap.bundle.min.js"></script>
+    // Initialize dropdown and hide table on page load
+    document.addEventListener('DOMContentLoaded', () => {
+        fetchCategoriesForEmployee();
+    });
+
+    function confirmExit() {
+        if (confirm('Are you sure you want to exit?')) {
+            window.location.href = '/';
+        }
+    }
+</script>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
