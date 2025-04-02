@@ -46,7 +46,7 @@
 
     <!-- Category Selection Section -->
     <div class="card p-3 mb-3">
-        <h3>Employee Checklist</h3>
+        <h3>Employee Checklist - {{ username }} </h3>
         <form id="employeeChecklistForm">
             <div class="mb-3 category-filter">
                 <label for="employeeCategoryDropdown" class="form-label">Select Category</label>
@@ -155,7 +155,7 @@
                             <td>
                                 <input type="number" id="correctedStock_${item.id}"
                                        class="form-control form-control-sm"
-                                       value="${item.in_stock_level}" min="0">
+                                       value="" min="0" placeholder="Enter number">
                             </td>
                             <td>${item.category}</td>
                             <td>${item.in_stock_level}</td>
@@ -183,15 +183,28 @@
     async function updateAllStock() {
         const inputs = document.querySelectorAll('[id^="correctedStock_"]');
         let storeUpdates = [];
-        let warnings = [];
+        let hasErrors = false;
 
-        // Collect all updates
+        // Collect all updates with validation
         inputs.forEach(input => {
             const itemId = input.id.split('_')[1];
             const correctedStock = parseInt(input.value);
 
+            if (input.value === "") {
+                alert(`Item ID ${itemId}: Please enter a stock value`);
+                hasErrors = true;
+                return;
+            }
+
+            if (isNaN(correctedStock)) {
+                alert(`Item ID ${itemId}: Please enter a valid number`);
+                hasErrors = true;
+                return;
+            }
+
             if (correctedStock < 0) {
                 alert(`Item ID ${itemId}: Stock quantity cannot be negative.`);
+                hasErrors = true;
                 return;
             }
 
@@ -201,10 +214,19 @@
             });
         });
 
-        // Process updates with store validation
+        if (hasErrors) {
+            return;
+        }
+
+        if (storeUpdates.length === 0) {
+            alert('No valid updates to process');
+            return;
+        }
+
+        // Process updates silently
         for (const update of storeUpdates) {
             try {
-                const response = await fetch(`/set_stock_level/${update.itemId}`, {
+                await fetch(`/set_stock_level/${update.itemId}`, {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
@@ -212,32 +234,18 @@
                         store_address: currentStore
                     }),
                 });
-
-                const data = await response.json();
-                if (response.ok) {
-                    const stockCell = document.querySelector(`#correctedStock_${update.itemId}`)
-                        .closest('tr').querySelector('td:nth-child(5)');
-                    stockCell.textContent = update.stock;
-
-                    if (data.warning && data.warning.message) {  // Modified line
-                        warnings.push(data.warning.message);     // Modified line
-                    }
-                } else {
-                    alert(`Failed to update item ID ${update.itemId}: ${data.message}`);
-                }
             } catch (error) {
                 console.error('Update error:', error);
+                // Only show error alerts, not success messages
                 alert(`Failed to update item ID ${update.itemId}`);
+                return;
             }
         }
 
-        // Show summary
-        if (warnings.length > 0) {
-            alert("Warnings:\n" + warnings.join('\n'));
-        }
-        if (storeUpdates.length > 0) {
-            alert(`Successfully updated ${storeUpdates.length} items in ${currentStore}!`);
-        }
+        // Reset the UI after successful update without any alerts
+        document.getElementById('employeeCategoryDropdown').selectedIndex = 0;
+        document.getElementById('inventoryCheckSection').classList.add('d-none');
+        document.getElementById('auditTableBody').innerHTML = '';
     }
 
     // Event listener for category dropdown change

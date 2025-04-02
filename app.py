@@ -172,7 +172,8 @@ def login():
                     'role': user['role'],
                     'store_address': user['store_address'],
                     'authorized': True,
-                    '_csrf_validated': True  # Explicit CSRF validation marker
+                    '_csrf_validated': True,  # Explicit CSRF validation marker
+                    'username': username
                 })
 
                 # Debug log
@@ -542,7 +543,8 @@ def employee_dashboard():
 
     return render_template('employee_dashboard.html',
                            items=items,
-                           current_store=current_store  # Add this
+                           current_store=current_store,
+                           username = session.get('username')
                            )
 
 
@@ -1085,11 +1087,30 @@ def download_stock_report():
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute('''
-            SELECT name, category, in_stock_level, reorder_level, max_stock_level, supplier
-            FROM items
-            WHERE in_stock_level <= reorder_level
-            AND store_address = ?
-            ORDER BY supplier
+            SELECT 
+                i.name,
+                i.category,
+                i.in_stock_level,
+                i.reorder_level,
+                i.max_stock_level,
+                i.supplier,
+                u.username,
+                u.employee_name
+            FROM items i
+            LEFT JOIN (
+                SELECT 
+                    item_id,
+                    MAX(updated_at) AS latest_update
+                FROM stock_updates
+                GROUP BY item_id
+            ) latest ON i.id = latest.item_id
+            LEFT JOIN stock_updates su 
+                ON su.item_id = latest.item_id 
+                AND su.updated_at = latest.latest_update
+            LEFT JOIN users u ON su.user_id = u.id
+            WHERE i.in_stock_level <= i.reorder_level
+            AND i.store_address = ?
+            ORDER BY i.supplier
         ''', (store_filter,))
         items = cursor.fetchall()
 
@@ -1124,17 +1145,24 @@ def download_stock_report():
             c.drawString(260, y_position, "Reorder")
             c.drawString(320, y_position, "Max")
             c.drawString(380, y_position, "Restock Qty")
+            c.drawString(440, y_position, "Updated By")  # 新增列
+            c.drawString(500, y_position, "Employee Name")  # 新增列
             y_position -= 15
 
             c.setFont("Helvetica", 8)
             for item in supplier_items:
                 restock_qty = item['max_stock_level'] - item['in_stock_level']
+                user_display = item['username'] or 'System'
+                emp_name = item['employee_name'] or 'Auto'
+
                 c.drawString(50, y_position, item['name'][:25])
                 c.drawString(120, y_position, item['category'][:25])
                 c.drawString(200, y_position, str(item['in_stock_level']))
                 c.drawString(260, y_position, str(item['reorder_level']))
                 c.drawString(320, y_position, str(item['max_stock_level']))
                 c.drawString(380, y_position, str(restock_qty))
+                c.drawString(440, y_position, user_display[:15])
+                c.drawString(500, y_position, emp_name[:15])
                 y_position -= 15
 
                 if y_position < 50:
@@ -1510,4 +1538,4 @@ def add_header(response):
 
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=False)
