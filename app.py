@@ -19,8 +19,9 @@ VALID_STORES = [
     "Kusan Bazaar, 510 Barber Ln, Milpitas, CA 95035"
 ]
 
-# Database configuration
-DATABASE = 'stock_manager.db'
+# Define DATABASE path properly
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+DATABASE = os.path.join(BASE_DIR, 'instance', 'stock_manager.db')
 
 # Define the upload folder
 UPLOAD_FOLDER = 'static/uploads'  # Path to the folder where uploaded files will be saved
@@ -50,6 +51,10 @@ def get_db_connection():
 
 
 def init_db():
+    # Create instance folder if it doesn't exist
+    db_dir = os.path.dirname(DATABASE)
+    os.makedirs(db_dir, exist_ok=True)
+
     with sqlite3.connect(DATABASE) as conn:
         cursor = conn.cursor()
 
@@ -1455,12 +1460,6 @@ def logout():
     session.clear()  # Clear all session data
     return redirect(url_for('login'))
 
-@app.before_request
-def check_scheduler():
-    if not scheduler.running:
-        app.logger.critical("Scheduler not running!")
-        scheduler.start()
-
 def cleanup_stock_history():
     try:
         with get_db_connection() as conn:
@@ -1506,6 +1505,10 @@ scheduler.add_job(
     coalesce=True,
     misfire_grace_time=3600  # 1 hour grace period
 )
+
+# Start the scheduler immediately after adding the job
+scheduler.start()
+
 
 @app.before_request
 def check_authorization():
