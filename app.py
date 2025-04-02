@@ -1506,10 +1506,6 @@ scheduler.add_job(
     misfire_grace_time=3600  # 1 hour grace period
 )
 
-# Start the scheduler immediately after adding the job
-scheduler.start()
-
-
 @app.before_request
 def check_authorization():
     if request.endpoint not in ['login', 'register', 'static']:
@@ -1540,4 +1536,14 @@ def add_header(response):
 
 
 if __name__ == '__main__':
+    scheduler.start()
     app.run(debug=False)
+else:
+    try:
+        print("Running in production environment - attempting alternative scheduler configuration")
+        # Either attempt with different settings or disable
+        scheduler.configure(options={'apscheduler.daemon': False})
+        scheduler.start()
+    except RuntimeError as e:
+        print(f"Scheduler disabled: {str(e)}")
+        print("Stock history cleanup will not run automatically")
