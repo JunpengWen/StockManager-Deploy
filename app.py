@@ -1,15 +1,18 @@
+import io
 from collections import defaultdict
-from itertools import groupby
 
 from flask import Flask, render_template, request, redirect, url_for, jsonify, session, flash
 import sqlite3
 import os
 from flask import send_file
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
 from werkzeug.routing import ValidationError
 from werkzeug.utils import secure_filename
 from apscheduler.schedulers.background import BackgroundScheduler
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.pagesizes import letter
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.colors import HexColor
 
 app = Flask(__name__)
 app.secret_key = 'your_secret_key'  # Required for flashing messages
@@ -77,6 +80,7 @@ def init_db():
             picture TEXT,
             supplier TEXT,
             store_address TEXT NOT NULL,
+            unit TEXT DEFAULT NULL,
             UNIQUE(name, store_address)  -- Add composite constraint
         )''')
 
@@ -389,16 +393,56 @@ def owner_dashboard():
 
 def handle_owner_post_request():
     try:
-        # 统一处理表单数据和JSON数据
+        # -----------------------------------------------------------------
+        # 1.  grab raw data   (unchanged)
+        # -----------------------------------------------------------------
         if request.is_json:
             data = request.get_json()
             store_address = data.get('store_address', '')
-            picture_path = None  # JSON请求不处理图片上传
+            picture_path  = None
         else:
-            data = request.form
+            data          = request.form
             store_address = data.get('store_address')
-            picture = request.files.get('picture')
-            picture_path = save_uploaded_file(picture) if picture else None
+            picture       = request.files.get('picture')
+            picture_path  = save_uploaded_file(picture) if picture else None
+
+        # -----------------------------------------------------------------
+        # 2.  special case:  “all”  => duplicate into every VALID_STORE
+        # -----------------------------------------------------------------
+        if store_address == 'all':
+            inserted, skipped = 0, []
+            for store in VALID_STORES:
+                local_data              = dict(data)           # shallow copy
+                local_data['store_address'] = store
+                validated = validate_item_data(local_data)     # existing helper
+
+                try:
+                    with get_db_connection() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute('''
+                            INSERT INTO items (
+                                name, category, max_stock_level,
+                                in_stock_level, reorder_level,
+                                picture, supplier, store_address, unit
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ''', (
+                            validated['name'], validated['category'],
+                            validated['max_stock_level'], validated['in_stock_level'],
+                            validated['reorder_level'], picture_path,
+                            validated['supplier'], store,
+                            validated['unit']
+                        ))
+                        conn.commit()
+                        inserted += 1
+                except sqlite3.IntegrityError:
+                    skipped.append(store)        # duplicate – ignore
+
+            msg = f'Added to {inserted} store(s).' \
+                  + (f'  Skipped (exists): {", ".join(s.split(",")[0] for s in skipped)}'
+                     if skipped else '')
+
+            return jsonify({'message': msg}), 201 if request.is_json else \
+                   flash(msg, 'success') or redirect(url_for('owner_dashboard'))
 
         # 增强数据验证
         validated_data = validate_item_data(data)
@@ -410,8 +454,8 @@ def handle_owner_post_request():
                 INSERT INTO items (
                     name, category, max_stock_level, 
                     in_stock_level, reorder_level, 
-                    picture, supplier, store_address
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    picture, supplier, store_address,unit
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 validated_data['name'],
                 validated_data['category'],
@@ -420,7 +464,8 @@ def handle_owner_post_request():
                 validated_data['reorder_level'],
                 picture_path,
                 validated_data['supplier'],
-                store_address
+                store_address,
+                validated_data['unit']
             ))
             conn.commit()
 
@@ -480,43 +525,67 @@ def handle_owner_get_request():
 
 
 # 辅助函数
+# ------------------------------------------------------------------------
+#  Item-data validator  –  now “store_address” may be the literal string
+#  "all" so the Owner can duplicate an item into every real store.
+# ------------------------------------------------------------------------
 def validate_item_data(data):
+    """
+    Ensure the incoming item payload is complete and sane.
+    Returns a dict with correctly-typed values or raises ValidationError.
+    """
+
     required_fields = {
-        'name': (str, lambda x: len(x) >= 2),
-        'category': (str, lambda x: x in get_categories()),
-        'max_stock_level': (int, lambda x: x > 0),
-        'in_stock_level': (int, lambda x: x >= 0),
-        'reorder_level': (int, lambda x: x > 0),
-        'supplier': (str, lambda x: len(x) >= 2),
-        'store_address': (str, lambda x: x in VALID_STORES)
+        'name'            : (str, lambda x: len(x) >= 2),
+        'category'        : (str, lambda x: x in get_categories()),
+        'max_stock_level' : (int, lambda x: x > 0),
+        'in_stock_level'  : (int, lambda x: x >= 0),
+        'reorder_level'   : (int, lambda x: x > 0),
+        'supplier'        : (str, lambda x: len(x) >= 2),
+        # accept real store addresses OR the keyword "all"
+        'store_address'   : (str, lambda x: x in VALID_STORES or x.lower() == 'all')
     }
 
     validated = {}
-    for field, (data_type, validator) in required_fields.items():
+    for field, (cast_type, check_func) in required_fields.items():
         value = data.get(field)
-        if not value:
+        if value in (None, ''):
             raise ValidationError(f'Missing required field: {field}')
         try:
-            value = data_type(value)
-            if not validator(value):
+            value = cast_type(value)
+            if not check_func(value):
                 raise ValueError
         except (ValueError, TypeError):
             raise ValidationError(f'Invalid value for {field}')
         validated[field] = value
 
+    # ---------- optional field: unit -----------------
+    raw = data.get('unit')
+    unit_val = (raw or '').strip()  # safe even when raw is None, may be '', None, or a value
+    if unit_val:  # only validate when something was sent
+        if len(unit_val) > 20:
+            raise ValidationError('Unit must be ≤ 20 characters')
+        validated['unit'] = unit_val
+    else:
+        validated['unit'] = None  # will be stored as NULL in SQLite
+
+    # Business rule: reorder level < max stock
     if validated['reorder_level'] >= validated['max_stock_level']:
         raise ValidationError('Reorder Level must be less than Max Stock Level')
 
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT id FROM items
-            WHERE name = ? AND store_address = ?
-        ''', (validated['name'], validated['store_address']))
-        if cursor.fetchone():
-            raise ValidationError(
-                f"Item '{validated['name']}' already exists in {validated['store_address']}"
-            )
+    # Duplicate-name check only when a concrete store is specified
+    if validated['store_address'].lower() != 'all':
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT 1 FROM items
+                WHERE name = ? AND store_address = ?
+            ''', (validated['name'], validated['store_address']))
+            if cursor.fetchone():
+                raise ValidationError(
+                    f"Item '{validated['name']}' already exists in "
+                    f"{validated['store_address']}"
+                )
 
     return validated
 
@@ -909,6 +978,8 @@ def update_item(item_id):
         if data['reorder_level'] >= data['max_stock_level']:
             return jsonify({'message': 'Reorder level must be less than Max Stock Level'}), 400
 
+
+
         with get_db_connection() as conn:
             cursor = conn.cursor()
 
@@ -923,6 +994,11 @@ def update_item(item_id):
             if current_role != 'owner' and existing_item['store_address'] != current_store:
                 return jsonify({'message': 'Unauthorized to modify this item'}), 403
 
+            unit_value = data.get('unit') or None
+
+            if unit_value and len(unit_value) > 20:
+                return jsonify({'message': 'Unit must be ≤20 chars'}), 400
+
             # Update item
             cursor.execute('''
                 UPDATE items SET
@@ -932,7 +1008,8 @@ def update_item(item_id):
                     in_stock_level = ?,
                     reorder_level = ?,
                     supplier = ?,
-                    store_address = ?
+                    store_address = ?,
+                    unit = ?
                 WHERE id = ?
             ''', (
                 data['name'],
@@ -942,6 +1019,7 @@ def update_item(item_id):
                 data['reorder_level'],
                 data['supplier'],
                 data['store_address'],
+                unit_value,
                 item_id
             ))
 
@@ -1063,7 +1141,7 @@ def delete_user_stock_updates(username):
 
 @app.route('/download_stock_report', methods=['GET'])
 def download_stock_report():
-    """Generate store-specific stock warning PDF report"""
+    """Generate store-specific stock warning PDF report using Platypus Table."""
     VALID_STORES = [
         "Kusan Uyghur Cuisine, 1516 N 4th Street, San Jose, CA 95112",
         "Kusan Bazaar, 510 Barber Ln, Milpitas, CA 95035"
@@ -1080,14 +1158,17 @@ def download_stock_report():
     if current_role != 'owner':
         store_filter = current_store
 
-        # Validate store access
+    # Validate store access
     if current_role != 'owner' and store_filter != current_store:
         return jsonify({'message': 'Unauthorized to access this store'}), 403
 
     if store_filter not in VALID_STORES:
         return jsonify({'message': 'Invalid store selection'}), 400
 
-    # Get store-specific data
+    # ---- short name needed later for headings and the output filename ----
+    short_name = store_filter.split(',')[0].strip()
+
+    # Fetch store-specific data
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute('''
@@ -1097,98 +1178,113 @@ def download_stock_report():
                 i.in_stock_level,
                 i.reorder_level,
                 i.max_stock_level,
+                i.unit,
                 i.supplier,
-                u.username,
-                u.employee_name
-            FROM items i
-            LEFT JOIN (
-                SELECT 
-                    item_id,
-                    MAX(updated_at) AS latest_update
-                FROM stock_updates
-                GROUP BY item_id
+                u.employee_name   AS updated_by
+            FROM   items          i
+            LEFT JOIN (           -- grab last update per item
+                SELECT item_id, MAX(updated_at) AS latest
+                FROM   stock_updates
+                GROUP  BY item_id
             ) latest ON i.id = latest.item_id
             LEFT JOIN stock_updates su 
-                ON su.item_id = latest.item_id 
-                AND su.updated_at = latest.latest_update
+                   ON su.item_id = latest.item_id
+                  AND su.updated_at = latest.latest
             LEFT JOIN users u ON su.user_id = u.id
-            WHERE i.in_stock_level <= i.reorder_level
-            AND i.store_address = ?
-            ORDER BY i.supplier
+            WHERE  i.in_stock_level <= i.reorder_level
+            AND    i.store_address  = ?
+            ORDER  BY i.category, i.supplier, i.name
         ''', (store_filter,))
-        items = cursor.fetchall()
+        rows = cursor.fetchall()
 
-    # Generate PDF even if no items
-    pdf_filename = os.path.join(os.getcwd(), f"Stock_Warnings_{store_filter.split(',')[0].replace(' ', '_')}.pdf")
-    c = canvas.Canvas(pdf_filename, pagesize=letter)
+        # 2️⃣  ── build:    {category → {supplier → [row,row,…] } }
+        from collections import defaultdict
+        grouped = defaultdict(lambda: defaultdict(list))
 
-    # Store header
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(50, 765, f"Stock Report for: {store_filter}")
-    c.setFont("Helvetica", 10)
-    c.drawString(50, 745, f"Generated by: {session.get('employee_name', 'System')}")
+        def with_unit(n, unit):
+            return f"{n} {unit}" if unit else str(n)
 
-    # Report title
-    c.setFont("Helvetica-Bold", 14)
-    c.drawCentredString(300, 725, "Stock Warnings Report")
-    c.setFont("Helvetica", 10)
+        for r in rows:
+            cat = r['category'] or 'Uncategorised'
+            supplier = r['supplier'] or 'Unknown supplier'
+            grouped[cat][supplier].append(r)
 
-    if items:
-        y_position = 700
-        for supplier, items in groupby(items, key=lambda x: x['supplier']):
-            supplier_items = list(items)
-            c.setFont("Helvetica-Bold", 10)
-            c.drawString(50, y_position, f"Supplier: {supplier}")
-            y_position -= 20
+        # 3️⃣  ── PDF ------------------------------------------------------------------
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=letter,
+                                leftMargin=36, rightMargin=36,
+                                topMargin=48, bottomMargin=36)
 
-            # Table headers
-            c.setFont("Helvetica-Bold", 8)
-            c.drawString(50, y_position, "Item Name")
-            c.drawString(120, y_position, "Category")
-            c.drawString(200, y_position, "Current")
-            c.drawString(260, y_position, "Reorder")
-            c.drawString(320, y_position, "Max")
-            c.drawString(380, y_position, "Restock Qty")
-            c.drawString(440, y_position, "Updated By")  # 新增列
-            c.drawString(500, y_position, "Employee Name")  # 新增列
-            y_position -= 15
+        styles = getSampleStyleSheet()
+        headingCat = styles['Heading2']
+        headingSupp = styles['Heading3']
+        title = styles['Title']
+        title.fontSize = 14;
+        title.leading = 16
 
-            c.setFont("Helvetica", 8)
-            for item in supplier_items:
-                restock_qty = item['max_stock_level'] - item['in_stock_level']
-                user_display = item['username'] or 'System'
-                emp_name = item['employee_name'] or 'Auto'
+        story = [Paragraph(f"{short_name} – Stock Warnings Report", title),
+                 Spacer(1, 12)]
 
-                c.drawString(50, y_position, item['name'][:25])
-                c.drawString(120, y_position, item['category'][:25])
-                c.drawString(200, y_position, str(item['in_stock_level']))
-                c.drawString(260, y_position, str(item['reorder_level']))
-                c.drawString(320, y_position, str(item['max_stock_level']))
-                c.drawString(380, y_position, str(restock_qty))
-                c.drawString(440, y_position, user_display[:15])
-                c.drawString(500, y_position, emp_name[:15])
-                y_position -= 15
+        if not rows:
+            story.append(Paragraph("No stock warnings found.", styles['Normal']))
+        else:
+            # colour / style consts exactly as before …
+            HEADER_BG = HexColor("#003366")
+            HEADER_FG = colors.whitesmoke
+            ROW_EVEN_BG = HexColor("#F4F7FA")
+            ROW_ODD_BG = colors.white
+            RESTOCK_BG = HexColor("#FFF4CC")
+            GRID_CLR = HexColor("#B0BEC5")
 
-                if y_position < 50:
-                    c.showPage()
-                    y_position = 770
-                    c.setFont("Helvetica-Bold", 10)
-                    c.drawString(50, 780, "Continued from previous page...")
-            y_position -= 10
-    else:
-        c.setFont("Helvetica-Bold", 16)
-        c.drawCentredString(300, 700, "No Stock Warnings Found")
-        c.setFont("Helvetica", 12)
-        c.drawCentredString(300, 680, f"All items at {store_filter} are within safe stock levels")
+            # iterate in alphabetical order
+            for category in sorted(grouped):
+                story.append(Paragraph(f"CATEGORY : {category.upper()}", headingCat))
+                story.append(Spacer(1, 6))
 
-    c.save()
+                for supplier in sorted(grouped[category]):
+                    story.append(Paragraph(f"‣ Supplier {supplier}", headingSupp))
+                    story.append(Spacer(1, 4))
 
-    return send_file(
-        pdf_filename,
-        as_attachment=True,
-        download_name=f"Stock_Warnings_{store_filter.split(',')[0]}.pdf"
-    )
+                    data = [["Item Name", "Current", "Reorder", "Max",
+                             "Restock Qty", "Updated By"]]
 
+                    for r in grouped[category][supplier]:
+                        restock = r['max_stock_level'] - r['in_stock_level']
+                        u = r['unit']  # may be None/NULL
+                        data.append([
+                            r['name'],
+                            with_unit(r['in_stock_level'], u),
+                            with_unit(r['reorder_level'], u),
+                            with_unit(r['max_stock_level'], u),
+                            with_unit(restock, u),
+                            r['updated_by'] or 'System'
+                        ])
+
+                    tbl = Table(data,
+                                colWidths=[180, 55, 55, 55, 65, 90])
+
+                    tbl.setStyle(TableStyle([
+                        ('FONT', (0, 0), (-1, 0), 'Helvetica-Bold', 10),
+                        ('FONT', (0, 1), (-1, -1), 'Helvetica', 10),
+                        ('BACKGROUND', (0, 0), (-1, 0), HEADER_BG),
+                        ('TEXTCOLOR', (0, 0), (-1, 0), HEADER_FG),
+                        ('ROWBACKGROUNDS', (0, 1), (-1, -1),
+                         (ROW_EVEN_BG, ROW_ODD_BG)),
+                        ('BACKGROUND', (4, 1), (4, -1), RESTOCK_BG),
+                        ('FONT', (4, 1), (4, -1), 'Helvetica-Bold', 10),
+                        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                        ('GRID', (0, 0), (-1, -1), 0.25, GRID_CLR),
+                    ]))
+                    story.extend([tbl, Spacer(1, 10)])
+
+        doc.build(story)
+        buffer.seek(0)
+
+        from datetime import date
+        fname = f"Stock_Report_{short_name.replace(' ', '_')}_{date.today()}.pdf"
+        return send_file(buffer, as_attachment=True,
+                         download_name=fname, mimetype='application/pdf')
 
 
 @app.route('/create_account', methods=['POST'])

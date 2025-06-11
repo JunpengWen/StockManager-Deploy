@@ -76,6 +76,20 @@
             text-align: center;
             vertical-align: middle;
         }
+
+        #stockWarningsCard .card-header {
+            font-size: 1rem;
+            padding: 0.95rem 1.25rem;
+            border: none;          /* remove default border so it looks like a button */
+        }
+
+        .toggle-icon {
+            transition: transform 0.25s ease;
+        }
+
+        button[aria-expanded="true"] .toggle-icon {
+            transform: rotate(180deg);
+        }
     </style>
 </head>
 <body>
@@ -85,12 +99,31 @@
         <h3 class="store-indicator" id="currentStore"></h3>
     </div>
 
-    <!-- Stock Warnings Section -->
-    <div id="stockWarnings" class="alert alert-warning d-none">
-        <h4>Stock Warnings - <span id="warningStore"></span></h4>
-        <div id="warningList"></div>
-        <button class="btn btn-danger mt-3" onclick="downloadStockReport()">Download PDF Report</button>
+    <!-- Stock Warnings Section (collapsible) -->
+    <div class="card mb-3 d-none" id="stockWarningsCard">
+        <button class="card-header btn btn-light w-100 text-start d-flex
+                       justify-content-between align-items-center"
+                data-bs-toggle="collapse"
+                data-bs-target="#stockWarningsBody"
+                aria-expanded="false">
+            <span class="fw-bold">
+                <i class="bi bi-exclamation-triangle-fill text-warning me-2"></i>
+                Stock Warnings – <span id="warningStore"></span>
+            </span>
+            <i class="bi bi-chevron-down toggle-icon"></i>
+        </button>
+
+        <div id="stockWarningsBody" class="collapse">
+            <div class="card-body">
+                <div id="warningList"></div>
+                <button class="btn btn-danger mt-3"
+                        onclick="downloadStockReport()">
+                    Download PDF Report
+                </button>
+            </div>
+        </div>
     </div>
+
 
     <!-- Updated Inventory Management -->
     <div class="card p-3 mb-3">
@@ -145,6 +178,10 @@
     let pendingUpdates = {};
     const sessionToken = sessionStorage.getItem('token');
 
+    function formatWithUnit(value, unit) {
+        return unit ? `${value} ${unit}` : value;
+    }
+
     document.addEventListener('DOMContentLoaded', () => {
         currentStore = "{{ current_store }}" || "Current Store";
         const storeDisplayName = currentStore.split(',')[0].trim();
@@ -194,7 +231,7 @@
                     <td>${item.id}</td>
                     <td>${item.name}</td>
                     <td>${item.category}</td>
-                    <td>${item.in_stock_level}</td>
+                    <td>${formatWithUnit(item.in_stock_level, item.unit)}</td>
                     <td>${item.supplier || 'N/A'}</td>
                     <td>
                         <input type="number"
@@ -415,38 +452,72 @@
         fetchItemsForSelectedCategory(this.value);
     });
 
-    // 新增：获取当前店铺的库存警告
+    // 获取当前店铺的库存警告（折叠卡片版）
     async function fetchStockWarningsForManager() {
         try {
-            const response = await fetch(`/items?store=${encodeURIComponent(currentStore)}`);
+            // 1️⃣  拉取本店所有商品
+            const response = await fetch(
+                `/items?store=${encodeURIComponent(currentStore)}`
+            );
             const items = await response.json();
-            const warnings = items.filter(item => item.in_stock_level <= item.reorder_level);
 
-            const warningList = document.getElementById('warningList');
-            const warningSection = document.getElementById('stockWarnings');
+            // 2️⃣  过滤出低于 / 等于 reorder_level 的警告项
+            const warnings = items.filter(
+                item => item.in_stock_level <= item.reorder_level
+            );
 
+            // 3️⃣  DOM 句柄
+            const warningCard   = document.getElementById('stockWarningsCard');  // 整个卡片
+            const collapseBody  = document.getElementById('stockWarningsBody');  // 可折叠主体
+            const warningList   = document.getElementById('warningList');        // 列表容器
+            const warningStore  = document.getElementById('warningStore');       // 卡片标题里的店名
+
+            // 更新标题里的店铺名称
+            if (warningStore) {
+                warningStore.textContent =
+                    currentStore.split(',')[0].trim() || currentStore;
+            }
+
+            // 4️⃣  有警告 → 渲染并显示卡片；没有 → 整个卡片隐藏
             if (warnings.length > 0) {
-                warningList.innerHTML = warnings.map(item => `
-                <div class="alert alert-danger d-flex justify-content-between align-items-center mb-2">
-                    <div>
-                        <strong>${item.name}</strong> (Current: ${item.in_stock_level})
-                        - Reorder Level: ${item.reorder_level}
-                        <br>
-                        <small class="text-muted">${item.category} • ${item.supplier || 'No Supplier'}</small>
-                    </div>
-                    <button class="btn btn-sm btn-outline-dark" onclick="handleQuickRestock(${item.id})">
-                        Quick Restock
-                    </button>
-                </div>
-            `).join('');
-                warningSection.classList.remove('d-none');
+                // 构造每条警告 HTML
+                warningList.innerHTML = warnings.map(item => {
+                    const restockQty = item.max_stock_level - item.in_stock_level;
+                    return `
+                        <div class="alert alert-danger d-flex justify-content-between align-items-center mb-2">
+                            <div>
+                                <strong>${item.name}</strong>
+                                (Current: ${formatWithUnit(item.in_stock_level, item.unit)}) –
+                                Restock: ${formatWithUnit(restockQty, item.unit)}
+                                <br>
+                                <small class="text-muted">
+                                    ${item.category} • ${item.supplier || 'No Supplier'}
+                                </small>
+                            </div>
+                            <button class="btn btn-sm btn-outline-dark"
+                                    onclick="handleQuickRestock(${item.id})">
+                                Quick Restock
+                            </button>
+                        </div>
+                    `;
+                }).join('');
+
+                // 显示卡片
+                warningCard.classList.remove('d-none');
+
+                /*  默认保持折叠状态：
+                    如果 collapseBody 没有 'show' 类名，则说明当前是闭合状态，
+                    不做额外处理；如果用户之前展开过，保留展开状态。 */
             } else {
-                warningSection.classList.add('d-none');
+                // 无警告 → 隐藏卡片并清空列表
+                warningCard.classList.add('d-none');
+                warningList.innerHTML = '';
             }
         } catch (error) {
             console.error('Error fetching stock warnings:', error);
         }
     }
+
 
 
 

@@ -91,6 +91,9 @@
 
 <!-- JavaScript -->
 <script>
+    function formatWithUnit(value, unit) {
+        return unit ? `${value} ${unit}` : value;
+    }
     // Initialize store info from server template
     const currentStore = "{{ session.store_address }}";  // Get from server session
 
@@ -158,7 +161,7 @@
                                        value="" min="0" placeholder="Enter number">
                             </td>
                             <td>${item.category}</td>
-                            <td>${item.in_stock_level}</td>
+                            <td>${formatWithUnit(item.in_stock_level, item.unit)}</td>
                             <td>${item.supplier || 'N/A'}</td>
                             <td>
                                 ${item.picture ?

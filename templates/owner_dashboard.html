@@ -172,6 +172,7 @@
                                 <div class="col-md-6">
                                     <label class="form-label">Store Selection</label>
                                     <select class="form-select" id="itemStore" required>
+                                        <option value="all">All Stores</option>
                                         {% for store in valid_stores %}
                                         <option value="{{ store }}">{{ store.split(',')[0] }}</option>
                                         {% endfor %}
@@ -180,6 +181,11 @@
                                 <div class="col-md-6">
                                     <label class="form-label">Supplier</label>
                                     <input type="text" class="form-control" id="supplier" required>
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label">Unit (optional)</label>
+                                    <input type="text" class="form-control" id="itemUnit" maxlength="20"
+                                           placeholder="e.g. bags, boxes">
                                 </div>
                                 <div class="col-12">
                                     <div class="alert alert-warning mt-2">
@@ -389,6 +395,12 @@
                                            id="inlineSupplier" required
                                            placeholder="Supplier">
                                 </div>
+
+                                <div class="col-md-6">
+                                    <input type="text" class="form-control"
+                                           id="inlineUnit" maxlength="20"
+                                           placeholder="Unit (optional)">
+                                </div>
                             </div>
 
                             <div class="mt-3 d-flex justify-content-between">
@@ -437,6 +449,7 @@
                     <div class="col-md-6">
                         <label class="form-label">Store</label>
                         <select class="form-select" name="store_address" required>
+                            <option value="all">All Stores</option>
                             {% for store in valid_stores %}
                             <option value="{{ store }}">{{ store.split(',')[0] }}</option>
                             {% endfor %}
@@ -461,6 +474,11 @@
                     <div class="col-md-6">
                         <label class="form-label">Supplier</label>
                         <input type="text" class="form-control" name="supplier" required>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Unit (optional)</label>
+                        <input type="text" class="form-control" name="unit"
+                               maxlength="20" placeholder="bags / boxes">
                     </div>
                     <div class="col-12">
                         <button type="submit" class="btn btn-success w-100">Save Item</button>
@@ -596,6 +614,11 @@
                                 <label class="form-label">Supplier</label>
                                 <input type="text" class="form-control" id="editSupplier" required>
                             </div>
+                            <div class="col-md-6">
+                                <label class="form-label">Unit</label>
+                                <input type="text" class="form-control" id="editItemUnit"
+                                       maxlength="20">
+                            </div>
 
                         </div>
                         <div id="currentImagePreview" class="mt-3 text-center"></div>
@@ -689,6 +712,9 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
+        function formatWithUnit(value, unit) {
+            return unit ? `${value} ${unit}` : value;
+        }
 
         // 添加成功提示函数
         function showSuccessAlert(message) {
@@ -750,6 +776,7 @@
                 in_stock_level: parseInt(document.getElementById('inStock').value),
                 reorder_level: parseInt(document.getElementById('reorderLevel').value),
                 supplier: document.getElementById('supplier').value.trim(),
+                unit: document.getElementById('itemUnit').value.trim(),
                 store_address: document.getElementById('itemStore').value
             };
 
@@ -846,6 +873,7 @@
                 in_stock_level: parseInt(document.getElementById('inlineInStock').value),
                 reorder_level: parseInt(document.getElementById('inlineReorderLevel').value),
                 supplier: document.getElementById('inlineSupplier').value.trim(),
+                unit: document.getElementById('inlineUnit').value.trim(),
                 store_address: storeAddress,
                 category: category
             };
@@ -903,14 +931,19 @@
         }
 
         // 修改初始化按钮有效性检查的代码
-        document.getElementById('inlineAddBtn').addEventListener('click', function() {
-            const isStoreValid = document.getElementById('checklistStoreFilter').value !== 'all';
-            const isCategoryValid = document.getElementById('ownerCategoryDropdown').value !== '';
+        document.getElementById('inlineAddBtn').addEventListener('click', function () {
+            const storeValue      = document.getElementById('checklistStoreFilter').value;
+            const categoryValue   = document.getElementById('ownerCategoryDropdown').value;
 
-            if (!isStoreValid || !isCategoryValid) {
-                alert('Please select a specific Store and Category first');
-                return; // 仅提示错误，不操作下拉状态
+            /*  Only the category is mandatory now.
+                We accept  a concrete store  OR  "all". */
+            if (categoryValue === '') {
+                alert('Please select a Category first');
+                return;
             }
+
+            /*  Update the badges (“Current Store / Category”) and
+                open the dropdown menu as normal. */
             updateBadges();
         });
 
@@ -1205,6 +1238,7 @@
                 document.getElementById('editCurrentStock').value = item.in_stock_level;
                 document.getElementById('editReorderLevel').value = item.reorder_level;
                 document.getElementById('editSupplier').value = item.supplier;
+                document.getElementById('editItemUnit').value = item.unit || '';
 
                 // Load categories
                 const categorySelect = document.getElementById('editItemCategory');
@@ -1231,7 +1265,8 @@
                     reorder_level: parseInt(document.getElementById('editReorderLevel').value),
                     supplier: document.getElementById('editSupplier').value,
                     category: document.getElementById('editItemCategory').value,
-                    store_address: document.getElementById('editItemStore').value
+                    store_address: document.getElementById('editItemStore').value,
+                    unit: document.getElementById('editItemUnit').value.trim()
                 };
 
                 const response = await fetch(`/update_item/${formData.id}`, {
@@ -1471,19 +1506,20 @@
                                             <div class="text-muted small">
                                                 <span class="me-3">
                                                     <i class="bi bi-box-seam"></i>
-                                                    Current: ${item.in_stock_level}
+                                                    Current: ${formatWithUnit(item.in_stock_level, item.unit)}
                                                 </span>
                                                 <span class="me-3">
                                                     <i class="bi bi-exclamation-triangle"></i>
-                                                    Reorder: ${item.reorder_level}
+                                                    Reorder: ${formatWithUnit(item.reorder_level, item.unit)}
                                                 </span>
                                                 <span class="me-3">
                                                     <i class="bi bi-boxes"></i>
-                                                    Max: ${item.max_stock_level}
+                                                    Max: ${formatWithUnit(item.max_stock_level, item.unit)}
                                                 </span>
                                                 <span class="text-danger fw-bold">
                                                     <i class="bi bi-cart-plus"></i>
-                                                    Restock: ${item.max_stock_level - item.in_stock_level}
+                                                        Restock: ${formatWithUnit(item.max_stock_level - item.in_stock_level,
+                                                                                    item.unit)}
                                                 </span>
                                             </div>
                                         </div>
@@ -1506,7 +1542,7 @@
                                 </button>
                             </h2>
                             <div id="collapse-${storeName.replace(/\s+/g, '-')}"
-                                 class="accordion-collapse collapse show">
+                                 class="accordion-collapse collapse ">
                                 <div class="accordion-body">
                                     ${categoryItems.join('')}
                                 </div>
@@ -1594,7 +1630,7 @@
                     <tr data-item-id="${item.id}">
                         <td>${item.name}</td>
                         <td>${item.category}</td>
-                        <td>${item.in_stock_level}</td>
+                        <td>${formatWithUnit(item.in_stock_level, item.unit)}</td>
                         <td>
                             <span class="badge ${getStockStatusClass(item)}">
                                 ${getStockStatusText(item)}
@@ -1666,7 +1702,10 @@
                 const url = window.URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = `Stock_Report_${new Date().toISOString().slice(0,10)}.pdf`;
+                const storePart = storeFilter === 'all'
+                        ? 'All_Stores'
+                        : storeFilter.split(',')[0].replace(/\s+/g, '_');
+                a.download = `Stock_Report_${storePart}_${new Date().toISOString().slice(0,10)}.pdf`;
                 document.body.appendChild(a);
                 a.click();
                 document.body.removeChild(a);
@@ -1808,19 +1847,20 @@
                                                         <div class="text-muted small">
                                                             <span class="d-inline-block me-3">
                                                                 <i class="bi bi-box-seam"></i>
-                                                                Current: ${item.in_stock_level}
+                                                                Current: ${formatWithUnit(item.in_stock_level, item.unit)}
                                                             </span>
                                                             <span class="d-inline-block me-3">
                                                                 <i class="bi bi-exclamation-triangle"></i>
-                                                                Reorder: ${item.reorder_level}
+                                                                Reorder: ${formatWithUnit(item.reorder_level, item.unit)}
                                                             </span>
                                                             <span class="d-inline-block me-3">
                                                                 <i class="bi bi-boxes"></i>
-                                                                Max: ${item.max_stock_level}
+                                                                Max: ${formatWithUnit(item.max_stock_level, item.unit)}
                                                             </span>
                                                             <span class="text-danger fw-bold">
                                                                 <i class="bi bi-cart-plus"></i>
-                                                                Restock: ${item.max_stock_level - item.in_stock_level}
+                                                                    Restock: ${formatWithUnit(item.max_stock_level - item.in_stock_level,
+                                                                                              item.unit)}
                                                             </span>
                                                         </div>
                                                     </div>
@@ -1870,7 +1910,7 @@
                     <tr data-item-id="${item.id}">
                         <td>${item.name}</td>
                         <td>${item.category}</td>
-                        <td>${item.in_stock_level}</td>
+                        <td>${formatWithUnit(item.in_stock_level, item.unit)}</td>
                         <td>
                             <span class="badge ${getStockStatusClass(item)}">
                                 ${getStockStatusText(item)}
