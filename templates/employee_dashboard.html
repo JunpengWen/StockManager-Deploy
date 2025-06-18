@@ -28,13 +28,26 @@
         .table td, .table th {
             white-space: nowrap;
         }
-        .btn {
-            width: 100%;
-            margin-bottom: 10px;
+        @media (max-width: 576px) {  /* phones only */
+            .btn { width: 100%; margin-bottom: 10px; }
         }
         .card {
             margin-bottom: 20px;
         }
+        tr.highlight-warning {
+            background-color: #fff3cd !important; /* Light yellow warning color */
+            border-left: 4px solid #ffc107; /* Warning border */
+        }
+
+        tr.highlight-warning td {
+            animation: pulse-warning 1s infinite alternate;
+        }
+
+        @keyframes pulse-warning {
+            from { background-color: #fff3cd; }
+            to { background-color: #ffe8a1; }
+        }
+
     </style>
 </head>
 <body>
@@ -63,15 +76,15 @@
         <div class="table-responsive">
             <table class="table table-striped">
                 <thead>
-                <tr>
-                    <th>ID</th>
+                  <tr>
+                    <th class="d-none d-sm-table-cell">ID</th>
                     <th>Name</th>
-                    <th>Update Stock</th>
-                    <th>Category</th>
-                    <th>Current Stock</th>
-                    <th>Supplier</th>
-                    <th>Picture</th>
-                </tr>
+                    <th>Update</th>
+                    <th class="d-none d-sm-table-cell">Category</th>
+                    <th>Stock</th>
+                    <th class="d-none d-sm-table-cell">Supplier</th>
+                    <th class="d-none d-sm-table-cell">Picture</th>
+                  </tr>
                 </thead>
                 <tbody id="auditTableBody">
                 <!-- Dynamically populated -->
@@ -152,25 +165,24 @@
             } else {
                 filteredItems.forEach(item => {
                     const row = `
-                        <tr>
-                            <td>${item.id}</td>
-                            <td>${item.name}</td>
-                            <td>
-                                <input type="number" id="correctedStock_${item.id}"
-                                       class="form-control form-control-sm"
-                                       value="" min="0" placeholder="Enter number">
-                            </td>
-                            <td>${item.category}</td>
-                            <td>${formatWithUnit(item.in_stock_level, item.unit)}</td>
-                            <td>${item.supplier || 'N/A'}</td>
-                            <td>
-                                ${item.picture ?
-                                    `<img src="${item.picture}" alt="${item.name}"
-                                       style="width: 50px; height: 50px;">` :
-                                    'No Picture'}
-                            </td>
-                        </tr>
-                    `;
+                      <tr>
+                        <td class="d-none d-sm-table-cell">${item.id}</td>
+                        <td>${item.name}</td>
+                        <td>
+                          <input type="number" id="correctedStock_${item.id}"
+                                 class="form-control form-control-sm"
+                                 value="" min="0" placeholder="Enter number">
+                        </td>
+                        <td class="d-none d-sm-table-cell">${item.category}</td>
+                        <td>${formatWithUnit(item.in_stock_level, item.unit)}</td>
+                        <td class="d-none d-sm-table-cell">${item.supplier || 'N/A'}</td>
+                        <td class="d-none d-sm-table-cell">
+                          ${item.picture ?
+                            `<img src="${item.picture}" alt="${item.name}"
+                                   style="width:50px;height:50px;">`
+                            : '—'}
+                        </td>
+                      </tr>`;
                     auditTableBody.insertAdjacentHTML('beforeend', row);
                 });
             }
@@ -187,44 +199,55 @@
         const inputs = document.querySelectorAll('[id^="correctedStock_"]');
         let storeUpdates = [];
         let hasErrors = false;
+        let invalidItems = []; // 存储无效的输入项
 
-        // Collect all updates with validation
+        // 先收集所有更新并验证
         inputs.forEach(input => {
             const itemId = input.id.split('_')[1];
             const correctedStock = parseInt(input.value);
+            let valid = true;
 
             if (input.value === "") {
-                alert(`Item ID ${itemId}: Please enter a stock value`);
+                valid = false;
                 hasErrors = true;
-                return;
+            } else if (isNaN(correctedStock)) {
+                valid = false;
+                hasErrors = true;
+            } else if (correctedStock < 0) {
+                valid = false;
+                hasErrors = true;
             }
 
-            if (isNaN(correctedStock)) {
-                alert(`Item ID ${itemId}: Please enter a valid number`);
-                hasErrors = true;
-                return;
+            if (!valid) {
+                invalidItems.push(itemId);
+                const row = input.closest('tr');
+                if (row) {
+                    row.classList.add('highlight-warning');
+                }
+            } else {
+                storeUpdates.push({
+                    itemId: itemId,
+                    stock: correctedStock
+                });
             }
-
-            if (correctedStock < 0) {
-                alert(`Item ID ${itemId}: Stock quantity cannot be negative.`);
-                hasErrors = true;
-                return;
-            }
-
-            storeUpdates.push({
-                itemId: itemId,
-                stock: correctedStock
-            });
         });
 
+        // 如果有错误，显示总提示并高亮所有无效行
         if (hasErrors) {
+            // 高亮所有无效行
+            invalidItems.forEach(itemId => {
+                const input = document.getElementById(`correctedStock_${itemId}`);
+                const row = input.closest('tr');
+                if (row) {
+                    row.classList.add('highlight-warning');
+                }
+            });
+
+            // 显示一个总提示
+            alert('Please enter number in Highlighted field');
             return;
         }
 
-        if (storeUpdates.length === 0) {
-            alert('No valid updates to process');
-            return;
-        }
 
         // Process updates silently
         for (const update of storeUpdates) {
@@ -249,6 +272,7 @@
         document.getElementById('employeeCategoryDropdown').selectedIndex = 0;
         document.getElementById('inventoryCheckSection').classList.add('d-none');
         document.getElementById('auditTableBody').innerHTML = '';
+        alert(`Successfully updated ${storeUpdates.length} item(s)!`);
     }
 
     // Event listener for category dropdown change
@@ -267,6 +291,60 @@
             window.location.href = '/';
         }
     }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        // Get the form containing the inventory items
+        const form = document.querySelector('form');
+        if (!form) return;
+
+        // Get the category select dropdown
+        const categorySelect = document.querySelector('select');
+        if (!categorySelect) return;
+
+        // Function to validate the form before submission
+        function validateForm(event) {
+            // Only validate if a category is selected
+            if (categorySelect.value) {
+                const stockInputs = document.querySelectorAll('input[type="number"]');
+                let hasEmptyFields = false;
+
+                // Reset any previous highlighting
+                document.querySelectorAll('tr.highlight-warning').forEach(row => {
+                    row.classList.remove('highlight-warning');
+                });
+
+                // Check each stock input
+                stockInputs.forEach(input => {
+                    if (input.value.trim() === '') {
+                        // Find the parent row and highlight it
+                        const row = input.closest('tr');
+                        if (row) {
+                            row.classList.add('highlight-warning');
+                            hasEmptyFields = true;
+                        }
+                    }
+                });
+
+            }
+            return true;
+        }
+
+        // Attach the validation to the form submission
+        form.addEventListener('submit', validateForm);
+
+        // Also attach to the "Update All Items" button
+        const updateButton = Array.from(document.querySelectorAll('button')).find(
+            button => button.textContent.includes('Update All Items')
+        );
+
+        if (updateButton) {
+            updateButton.addEventListener('click', function(event) {
+                if (!validateForm(event)) {
+                    event.preventDefault();
+                }
+            });
+        }
+    });
 </script>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha3/dist/js/bootstrap.bundle.min.js"></script>

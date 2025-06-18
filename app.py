@@ -78,9 +78,10 @@ def init_db():
             in_stock_level INTEGER,
             reorder_level INTEGER,
             picture TEXT,
-            supplier TEXT,
+            supplier_id INTEGER,
             store_address TEXT NOT NULL,
             unit TEXT DEFAULT NULL,
+            FOREIGN KEY (supplier_id) REFERENCES suppliers(id),
             UNIQUE(name, store_address)  -- Add composite constraint
         )''')
 
@@ -114,8 +115,31 @@ def init_db():
             FOREIGN KEY (item_id) REFERENCES items(id)
         )''')
 
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS suppliers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            contact_info TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS user_categories (
+                user_id INTEGER NOT NULL,
+                category TEXT NOT NULL,
+                PRIMARY KEY (user_id, category),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        ''')
+
         cursor.execute('''CREATE INDEX IF NOT EXISTS idx_stock_updates_updated_at 
                        ON stock_updates(updated_at)''')
+
+        cursor.execute(
+            ''' CREATE TABLE IF NOT EXISTS units ( id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL ) ''')
+
+
         # Default data setup
         cursor.execute('INSERT OR IGNORE INTO categories (name) VALUES (?)', ("Default",))
 
@@ -322,6 +346,18 @@ def get_account_detail(account_id):
         if current_role != 'owner' and account['store_address'] != current_store:
             return jsonify({'message': 'Unauthorized access'}), 403
 
+
+        # 获取该账户允许访问的类别
+        cursor.execute('''
+            SELECT category FROM user_categories
+            WHERE user_id = ?
+        ''', (account_id,))
+        allowed_categories = [row['category'] for row in cursor.fetchall()]
+
+        # 获取系统所有类别
+        cursor.execute('SELECT name FROM categories')
+        all_categories = [row['name'] for row in cursor.fetchall()]
+
         # 返回完整账户信息（包含明文密码）
         return jsonify({
             'id': account['id'],
@@ -331,8 +367,55 @@ def get_account_detail(account_id):
             'store_address': account['store_address'],
             'phone_number': account['phone_number'],
             'email': account['email'],
+            'allowed_categories': allowed_categories,
+            'all_categories': all_categories,
             'password': account['password']  # 返回明文密码
         }), 200
+
+
+@app.route('/update_user_categories/<int:user_id>', methods=['POST'])
+def update_user_categories(user_id):
+    if 'authorized' not in session or session.get('role') != 'owner':
+        return jsonify({'message': 'Unauthorized'}), 401
+
+    data = request.json
+    categories = data.get('categories', [])
+
+    # 验证类别是否存在
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        existing_categories = set(row['name'] for row in cursor.execute('SELECT name FROM categories').fetchall())
+        invalid_categories = set(categories) - existing_categories
+
+        if invalid_categories:
+            return jsonify({
+                'message': f'Invalid categories: {", ".join(invalid_categories)}',
+                'valid_categories': list(existing_categories)
+            }), 400
+
+        try:
+            cursor.execute('DELETE FROM user_categories WHERE user_id = ?', (user_id,))
+            for category in categories:
+                cursor.execute('''
+                    INSERT INTO user_categories (user_id, category)
+                    VALUES (?, ?)
+                ''', (user_id, category))
+            conn.commit()
+            return jsonify({
+                'message': 'User categories updated successfully',
+                'updated_categories': categories
+            }), 200
+        except sqlite3.Error as e:
+            conn.rollback()
+            return jsonify({
+                'message': f'Database error: {str(e)}'
+            }), 500
+
+def allowed_categories_for(user_id):
+    with get_db_connection() as c:
+        cur = c.cursor()
+        cur.execute('SELECT category FROM user_categories WHERE user_id=?', (user_id,))
+        return [r['category'] for r in cur.fetchall()]
 
 
 @app.route('/authorize_account/<int:account_id>', methods=['POST'])
@@ -423,13 +506,13 @@ def handle_owner_post_request():
                             INSERT INTO items (
                                 name, category, max_stock_level,
                                 in_stock_level, reorder_level,
-                                picture, supplier, store_address, unit
+                                picture, supplier_id, store_address, unit
                             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ''', (
                             validated['name'], validated['category'],
                             validated['max_stock_level'], validated['in_stock_level'],
                             validated['reorder_level'], picture_path,
-                            validated['supplier'], store,
+                            validated['supplier_id'], store,
                             validated['unit']
                         ))
                         conn.commit()
@@ -454,7 +537,7 @@ def handle_owner_post_request():
                 INSERT INTO items (
                     name, category, max_stock_level, 
                     in_stock_level, reorder_level, 
-                    picture, supplier, store_address,unit
+                    picture, supplier_id, store_address,unit
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 validated_data['name'],
@@ -463,7 +546,7 @@ def handle_owner_post_request():
                 validated_data['in_stock_level'],
                 validated_data['reorder_level'],
                 picture_path,
-                validated_data['supplier'],
+                validated_data['supplier_id'],
                 store_address,
                 validated_data['unit']
             ))
@@ -477,7 +560,7 @@ def handle_owner_post_request():
             return redirect(url_for('owner_dashboard'))
 
     except ValidationError as e:
-        return handle_error(e.message, 400)
+        return handle_error(str(e), 400)
     except sqlite3.IntegrityError as e:
         return handle_error('Item name already exists', 409)
     except Exception as e:
@@ -540,8 +623,8 @@ def validate_item_data(data):
         'category'        : (str, lambda x: x in get_categories()),
         'max_stock_level' : (int, lambda x: x > 0),
         'in_stock_level'  : (int, lambda x: x >= 0),
-        'reorder_level'   : (int, lambda x: x > 0),
-        'supplier'        : (str, lambda x: len(x) >= 2),
+        'reorder_level'   : (int, lambda x: x >= 0),
+        'supplier_id': (int, lambda x: x > 0),  # 改为验证supplier_id
         # accept real store addresses OR the keyword "all"
         'store_address'   : (str, lambda x: x in VALID_STORES or x.lower() == 'all')
     }
@@ -559,19 +642,24 @@ def validate_item_data(data):
             raise ValidationError(f'Invalid value for {field}')
         validated[field] = value
 
-    # ---------- optional field: unit -----------------
-    raw = data.get('unit')
-    unit_val = (raw or '').strip()  # safe even when raw is None, may be '', None, or a value
-    if unit_val:  # only validate when something was sent
-        if len(unit_val) > 20:
-            raise ValidationError('Unit must be ≤ 20 characters')
-        validated['unit'] = unit_val
+    raw_unit = data.get('unit', '').strip()
+    if raw_unit:
+        if raw_unit not in get_units():
+            raise ValidationError('Unit must be chosen from master list')
+        validated['unit'] = raw_unit
     else:
-        validated['unit'] = None  # will be stored as NULL in SQLite
+        validated['unit'] = None
 
     # Business rule: reorder level < max stock
     if validated['reorder_level'] >= validated['max_stock_level']:
         raise ValidationError('Reorder Level must be less than Max Stock Level')
+
+    # 验证供应商是否存在
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT 1 FROM suppliers WHERE id = ?', (validated['supplier_id'],))
+        if not cursor.fetchone():
+            raise ValidationError("Invalid supplier ID")
 
     # Duplicate-name check only when a concrete store is specified
     if validated['store_address'].lower() != 'all':
@@ -651,6 +739,14 @@ def categories():
                 cursor.execute('INSERT INTO categories (name) VALUES (?)', (category.strip(),))
             conn.commit()
             return jsonify({'message': 'Categories updated globally for all stores'})
+
+        # -------- GET ----------
+        if session.get('role') in ['employee','server','line_cook','prep_cook']:
+            cursor.execute('''
+                SELECT category FROM user_categories
+                 WHERE user_id = ?
+            ''', (session['user_id'],))
+            return jsonify([r['category'] for r in cursor.fetchall()])
 
         cursor.execute('SELECT name FROM categories')
         return jsonify([row['name'] for row in cursor.fetchall()])
@@ -766,6 +862,7 @@ def update_account(account_id):
 
     data = request.json
     required_fields = ['username', 'role', 'employee_name', 'store_address', 'phone_number', 'email']
+    allowed_categories = data.get('allowed_categories', [])
 
     # Validate input
     if any(field not in data for field in required_fields):
@@ -843,6 +940,14 @@ def update_account(account_id):
                 WHERE id = ?
             ''', update_data)
 
+            # 更新允许的类别
+            cursor.execute('DELETE FROM user_categories WHERE user_id = ?', (account_id,))
+            for category in allowed_categories:
+                cursor.execute('''
+                    INSERT INTO user_categories (user_id, category)
+                    VALUES (?, ?)
+                ''', (account_id, category))
+
             conn.commit()
 
             if cursor.rowcount == 0:
@@ -861,42 +966,61 @@ def get_items():
     if 'authorized' not in session:
         return jsonify({'message': 'Unauthorized'}), 401
 
-    current_role = session.get('role')
-    current_store = session.get('store_address')
+    current_role   = session['role']
+    current_store  = session['store_address']
+    user_id        = session['user_id']
+    store_filter   = request.args.get('store','')
 
-    # Role-based store filtering
+    base = '''
+        SELECT i.id,i.name,i.category,i.max_stock_level,i.in_stock_level,
+               i.reorder_level,i.picture,s.name AS supplier,
+               i.store_address,i.unit
+          FROM items i
+     LEFT JOIN suppliers s ON i.supplier_id=s.id
+        WHERE 1=1
+    '''
+    params = []
+
+    # ► store limitation (non-owner may see only own store)
     if current_role != 'owner':
-        # Non-owners always get their store's items
-        query = 'SELECT * FROM items WHERE store_address = ?'
-        params = [current_store]
-    else:
-        # Owner logic with store parameter validation
-        store_filter = request.args.get('store', 'all')
-        if store_filter.lower() == 'all':
-            query = 'SELECT * FROM items'
-            params = []
-        elif store_filter in VALID_STORES:
-            query = 'SELECT * FROM items WHERE store_address = ?'
-            params = [store_filter]
-        else:
-            return jsonify({'message': 'Invalid store filter'}), 400
+        base   += ' AND i.store_address = ?'
+        params += [current_store]
+    elif store_filter and store_filter.lower()!='all':
+        base   += ' AND i.store_address = ?'
+        params += [store_filter]
+
+    # ► category limitation (only “front-line” roles are restricted)
+    if current_role in ['employee','server','line_cook','prep_cook']:
+        cats   = allowed_categories_for(user_id)
+        if not cats:                    # no categories → no data
+            return jsonify([])
+        base  += f" AND i.category IN ({','.join('?'*len(cats))})"
+        params.extend(cats)
 
     with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(query, params)
-        items = cursor.fetchall()
+        cur = conn.cursor()
+        cur.execute(base, params)
+        items = cur.fetchall()
+    return jsonify([dict(r) for r in items])
 
-    return jsonify([dict(item) for item in items])
 
 @app.route('/items/<int:item_id>', methods=['GET'])
 def get_item(item_id):
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM items WHERE id = ?', (item_id,))
+        cursor.execute('''
+            SELECT 
+                i.id, i.name, i.category, i.max_stock_level, 
+                i.in_stock_level, i.reorder_level, 
+                i.picture, s.name AS supplier, i.supplier_id, i.store_address, i.unit
+            FROM items i
+            LEFT JOIN suppliers s ON i.supplier_id = s.id
+            WHERE i.id = ?
+        ''', (item_id,))
         item = cursor.fetchone()
         if not item:
             return jsonify({'message': 'Item not found'}), 404
-        return jsonify(dict(item))  # 确保返回JSON格式
+        return jsonify(dict(item))
 
 
 @app.route('/delete_item/<int:item_id>', methods=['POST'])
@@ -946,94 +1070,78 @@ def delete_item(item_id):
 
 @app.route('/update_item/<int:item_id>', methods=['POST'])
 def update_item(item_id):
+    # ---------- 0.  basic guards ----------
     if not request.is_json:
-        return jsonify({'message': 'Only JSON format data is accepted'}), 400
+        return jsonify({'message': 'Only JSON accepted'}), 400
     if 'authorized' not in session:
         return jsonify({'message': 'Unauthorized'}), 401
 
-    current_role = session.get('role')
-    current_store = session.get('store_address')
+    current_role   = session['role']
+    current_store  = session['store_address']
+    data           = request.get_json()
 
+    # ---------- 1.  required fields & type-casts ----------
+    required = ['name', 'category', 'max_stock_level', 'in_stock_level',
+                'reorder_level', 'supplier_id', 'store_address']
+    for f in required:
+        if f not in data:
+            return jsonify({'message': f'Missing field: {f}'}), 400
     try:
-        data = request.get_json()
-        required_fields = ['name', 'category', 'max_stock_level',
-                           'in_stock_level', 'reorder_level', 'supplier',
-                           'store_address']
+        data['max_stock_level'] = int(data['max_stock_level'])
+        data['in_stock_level']  = int(data['in_stock_level'])
+        data['reorder_level']   = int(data['reorder_level'])
+        data['supplier_id']     = int(data['supplier_id'])
+    except ValueError:
+        return jsonify({'message': 'Numeric fields must be integers'}), 400
 
-        # Validate required fields
-        for field in required_fields:
-            if field not in data:
-                return jsonify({'message': f'Missing required field: {field}'}), 400
+    # ---------- 2.  business rules ----------
+    if data['reorder_level'] >= data['max_stock_level']:
+        return jsonify({'message': 'Reorder level must be less than max stock'}), 400
 
-        # Convert numerical values
-        try:
-            data = request.get_json()
-            data['max_stock_level'] = int(data['max_stock_level'])
-            data['in_stock_level'] = int(data['in_stock_level'])
-            data['reorder_level'] = int(data['reorder_level'])
-        except ValueError:
-            return jsonify({'message': 'Invalid numerical values'}), 400
+    # Unit must be in master list (or NULL)
+    unit_value = (data.get('unit') or '').strip() or None
+    if unit_value and unit_value not in get_units():
+        return jsonify({'message': 'Unit must be chosen from master list'}), 400
 
-        # Business logic validation
-        if data['reorder_level'] >= data['max_stock_level']:
-            return jsonify({'message': 'Reorder level must be less than Max Stock Level'}), 400
+    # ---------- 3.  locate the item & store-access check ----------
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute('SELECT store_address FROM items WHERE id = ?', (item_id,))
+        item = cur.fetchone()
+        if not item:
+            return jsonify({'message': 'Item not found'}), 404
 
+        if current_role != 'owner' and item['store_address'] != current_store:
+            return jsonify({'message': 'No permission to modify this item'}), 403
 
+        # ---------- 4.  duplicate-name check within the same store ----------
+        cur.execute('''
+            SELECT 1 FROM items
+            WHERE id <> ? AND name = ? AND store_address = ?
+        ''', (item_id, data['name'], item['store_address']))
+        if cur.fetchone():
+            return jsonify({'message': 'Item name already exists in this store'}), 409
 
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
+        # ---------- 5.  perform the update ----------
+        cur.execute('''
+            UPDATE items SET
+                name            = ?,
+                category        = ?,
+                max_stock_level = ?,
+                in_stock_level  = ?,
+                reorder_level   = ?,
+                supplier_id     = ?,
+                store_address   = ?,
+                unit            = ?
+            WHERE id = ?
+        ''', (data['name'], data['category'], data['max_stock_level'],
+              data['in_stock_level'], data['reorder_level'],
+              data['supplier_id'], data['store_address'],
+              unit_value, item_id))
+        conn.commit()
 
-            # Check existing item store
-            cursor.execute('SELECT store_address FROM items WHERE id = ?', (item_id,))
-            existing_item = cursor.fetchone()
+    return jsonify({'message': 'Item updated successfully'}), 200
 
-            if not existing_item:
-                return jsonify({'message': 'Item not found'}), 404
-
-            # Authorization check
-            if current_role != 'owner' and existing_item['store_address'] != current_store:
-                return jsonify({'message': 'Unauthorized to modify this item'}), 403
-
-            unit_value = data.get('unit') or None
-
-            if unit_value and len(unit_value) > 20:
-                return jsonify({'message': 'Unit must be ≤20 chars'}), 400
-
-            # Update item
-            cursor.execute('''
-                UPDATE items SET
-                    name = ?,
-                    category = ?,
-                    max_stock_level = ?,
-                    in_stock_level = ?,
-                    reorder_level = ?,
-                    supplier = ?,
-                    store_address = ?,
-                    unit = ?
-                WHERE id = ?
-            ''', (
-                data['name'],
-                data['category'],
-                data['max_stock_level'],
-                data['in_stock_level'],
-                data['reorder_level'],
-                data['supplier'],
-                data['store_address'],
-                unit_value,
-                item_id
-            ))
-
-            conn.commit()
-            return jsonify({'message': 'Item updated successfully'}), 200
-
-    except sqlite3.IntegrityError as e:
-        return jsonify({'message': 'Item name already exists'}), 409
-    except Exception as e:
-        return jsonify({'message': f'Server error: {str(e)}'}), 500
-    except Exception as e:
-        return jsonify({'message': 'Invalid JSON data format'}), 400
-    except (KeyError, sqlite3.IntegrityError) as e:
-        return jsonify({'message': 'Database operation failed', 'error': str(e)}), 500
 
 
 
@@ -1053,14 +1161,31 @@ def delete_stock_update(record_id):
         try:
             cursor = conn.cursor()
 
-            # 1. Get the stock update record and its store association
-            cursor.execute('''
-                SELECT s.id, s.store_address 
-                FROM stock_updates s
-                JOIN items i ON s.item_id = i.id
-                WHERE s.id = ?
-            ''', (record_id,))
+            # fetch the base record once
+            cursor.execute('SELECT store_address FROM stock_updates WHERE id=?', (record_id,))
             record = cursor.fetchone()
+            if not record:
+                return jsonify({'message': 'Record not found'}), 404
+
+            # Determine the batch-second, category and store
+            cursor.execute('''
+                 SELECT strftime('%Y-%m-%d %H:%M:%S', su.updated_at) AS ts_sec,
+                        i.category                                   AS cat
+                   FROM stock_updates su
+                   JOIN items i ON su.item_id = i.id
+                  WHERE su.id = ?
+            ''', (record_id,))
+            snap = cursor.fetchone()
+            ts_sec = snap['ts_sec'];
+            cat = snap['cat']
+
+            # delete *all* rows of that batch
+            cursor.execute('''
+                DELETE FROM stock_updates
+                 WHERE strftime('%Y-%m-%d %H:%M:%S', updated_at)=?
+                   AND store_address = ?
+                   AND item_id IN (SELECT id FROM items WHERE category=?)
+            ''', (ts_sec, record['store_address'], cat))
 
             if not record:
                 return jsonify({'message': 'Record not found'}), 404
@@ -1165,10 +1290,8 @@ def download_stock_report():
     if store_filter not in VALID_STORES:
         return jsonify({'message': 'Invalid store selection'}), 400
 
-    # ---- short name needed later for headings and the output filename ----
     short_name = store_filter.split(',')[0].strip()
 
-    # Fetch store-specific data
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute('''
@@ -1179,25 +1302,25 @@ def download_stock_report():
                 i.reorder_level,
                 i.max_stock_level,
                 i.unit,
-                i.supplier,
-                u.employee_name   AS updated_by
-            FROM   items          i
-            LEFT JOIN (           -- grab last update per item
+                s.name AS supplier_name,
+                u.employee_name AS updated_by
+            FROM items i
+            LEFT JOIN suppliers s ON i.supplier_id = s.id
+            LEFT JOIN (
                 SELECT item_id, MAX(updated_at) AS latest
-                FROM   stock_updates
-                GROUP  BY item_id
+                FROM stock_updates
+                GROUP BY item_id
             ) latest ON i.id = latest.item_id
             LEFT JOIN stock_updates su 
                    ON su.item_id = latest.item_id
                   AND su.updated_at = latest.latest
             LEFT JOIN users u ON su.user_id = u.id
-            WHERE  i.in_stock_level <= i.reorder_level
-            AND    i.store_address  = ?
-            ORDER  BY i.category, i.supplier, i.name
+            WHERE i.in_stock_level <= i.reorder_level
+            AND i.store_address = ?
+            ORDER BY i.category, s.name, i.name
         ''', (store_filter,))
         rows = cursor.fetchall()
 
-        # 2️⃣  ── build:    {category → {supplier → [row,row,…] } }
         from collections import defaultdict
         grouped = defaultdict(lambda: defaultdict(list))
 
@@ -1206,10 +1329,9 @@ def download_stock_report():
 
         for r in rows:
             cat = r['category'] or 'Uncategorised'
-            supplier = r['supplier'] or 'Unknown supplier'
+            supplier = r['supplier_name'] or 'Unknown supplier'  # Changed from r['supplier']
             grouped[cat][supplier].append(r)
 
-        # 3️⃣  ── PDF ------------------------------------------------------------------
         buffer = io.BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=letter,
                                 leftMargin=36, rightMargin=36,
@@ -1221,6 +1343,21 @@ def download_stock_report():
         title = styles['Title']
         title.fontSize = 14;
         title.leading = 16
+        CATEGORY_CLR = HexColor("#0d6efd")  # Bootstrap primary-blue
+        SUPPLIER_CLR = HexColor("#ff8800")  # warm orange
+        from reportlab.lib.styles import ParagraphStyle
+        headingCat = ParagraphStyle('CatHead',
+                                    parent=styles['Heading2'],
+                                    textColor=CATEGORY_CLR)
+
+        headingSupp = ParagraphStyle('SuppHead',
+                                     parent=styles['Heading3'],
+                                     textColor=SUPPLIER_CLR)
+
+        title = ParagraphStyle('RptTitle',
+                               parent=styles['Title'],
+                               fontSize=14,
+                               leading=16)
 
         story = [Paragraph(f"{short_name} – Stock Warnings Report", title),
                  Spacer(1, 12)]
@@ -1228,7 +1365,6 @@ def download_stock_report():
         if not rows:
             story.append(Paragraph("No stock warnings found.", styles['Normal']))
         else:
-            # colour / style consts exactly as before …
             HEADER_BG = HexColor("#003366")
             HEADER_FG = colors.whitesmoke
             ROW_EVEN_BG = HexColor("#F4F7FA")
@@ -1236,13 +1372,12 @@ def download_stock_report():
             RESTOCK_BG = HexColor("#FFF4CC")
             GRID_CLR = HexColor("#B0BEC5")
 
-            # iterate in alphabetical order
             for category in sorted(grouped):
-                story.append(Paragraph(f"CATEGORY : {category.upper()}", headingCat))
+                story.append(Paragraph(f"CATEGORY : {category.upper()}", headingCat))  # ← uses headingCat
                 story.append(Spacer(1, 6))
 
                 for supplier in sorted(grouped[category]):
-                    story.append(Paragraph(f"‣ Supplier {supplier}", headingSupp))
+                    story.append(Paragraph(f"‣ Supplier {supplier}", headingSupp))  # ← uses headingSupp
                     story.append(Spacer(1, 4))
 
                     data = [["Item Name", "Current", "Reorder", "Max",
@@ -1250,7 +1385,7 @@ def download_stock_report():
 
                     for r in grouped[category][supplier]:
                         restock = r['max_stock_level'] - r['in_stock_level']
-                        u = r['unit']  # may be None/NULL
+                        u = r['unit']
                         data.append([
                             r['name'],
                             with_unit(r['in_stock_level'], u),
@@ -1285,6 +1420,118 @@ def download_stock_report():
         fname = f"Stock_Report_{short_name.replace(' ', '_')}_{date.today()}.pdf"
         return send_file(buffer, as_attachment=True,
                          download_name=fname, mimetype='application/pdf')
+
+
+# ---------------------------------------------------------------
+#  Category-specific UPDATE report (Owner/Manager table shortcut)
+# ---------------------------------------------------------------
+@app.route('/download_category_update_report')
+def download_category_update_report():
+    if 'authorized' not in session:
+        return jsonify({'message': 'Unauthorized'}), 401
+
+    rec_id   = int(request.args.get('record',0))
+    snap     = batch_second(rec_id)
+    if not snap:
+        return jsonify({'message':'Invalid record id'}),404
+
+    ts_sec   = snap['ts_sec']
+    category = snap['cat']
+    store    = snap['store']
+    employee = request.args.get('employee','System')
+
+    # non-owner can only touch own store
+    if session['role']!='owner' and store!=session['store_address']:
+        return jsonify({'message':'Unauthorized store'}),403
+
+    short = store.split(',')[0].strip()
+
+    # pull the snapshot (stock_after) for THIS SECOND only
+    with get_db_connection() as c:
+        cur = c.cursor()
+        cur.execute('''
+            SELECT i.name,
+                   su.stock_after                     AS current,
+                   i.reorder_level,
+                   i.max_stock_level,
+                   i.unit,
+                   s.name                             AS supplier_name
+              FROM stock_updates su
+              JOIN items      i ON su.item_id=i.id
+         LEFT JOIN suppliers   s ON i.supplier_id=s.id
+             WHERE i.category      = ?
+               AND su.store_address= ?
+               AND strftime('%Y-%m-%d %H:%M:%S', su.updated_at)=?
+             ORDER BY s.name, i.name
+        ''', (category, store, ts_sec))
+        rows = cur.fetchall()
+
+    # ---------- PDF ----------
+    buffer = io.BytesIO()
+    doc     = SimpleDocTemplate(buffer, pagesize=letter,
+                                leftMargin=36, rightMargin=36,
+                                topMargin=48, bottomMargin=36)
+
+    styles  = getSampleStyleSheet()
+    title = styles['Title'];  # keep store-category title
+    title.fontSize = 14
+    title.leading = 16
+
+    from reportlab.lib.styles import ParagraphStyle
+    subtitle = ParagraphStyle(
+        'Updater',  # NEW – centred green subtitle
+        parent=styles['Heading3'],
+        alignment=1,  # 0-left 1-centre 2-right
+        fontSize=12,
+        leading=14,
+        textColor=HexColor("#198754")  # choose any colour you like
+    )
+
+    heading = styles['Heading3']  # unchanged – table heading size
+
+    story = [Paragraph(f"{short} – {category} Update Report", title),
+             Spacer(1, 4),
+             Paragraph(f"Updated by {employee}", subtitle),
+             Spacer(1, 12)]  # keeps the table title gap
+
+    if not rows:
+        story.append(Paragraph("No items found in this category.", styles['Normal']))
+    else:
+        data = [["Item", "Current", "Reorder", "Max", "Restock", "Supplier"]]
+        def u(n, unit): return f"{n} {unit}" if unit else n
+
+        for r in rows:
+            restock = r['max_stock_level'] - r['current']
+            data.append([ r['name'],
+                          u(r['current'], r['unit']),
+                          u(r['reorder_level' ], r['unit']),
+                          u(r['max_stock_level'], r['unit']),
+                          u(restock,            r['unit']),
+                          r['supplier_name'] or 'N/A' ])
+
+        from reportlab.platypus import Table, TableStyle
+        from reportlab.lib import colors, colors as c
+        GRID = HexColor("#B0BEC5")
+        tbl  = Table(data, colWidths=[160,55,55,55,60,100])
+        tbl.setStyle(TableStyle([
+            ('FONT', (0,0), (-1,0), 'Helvetica-Bold', 10),
+            ('BACKGROUND',(0,0),(-1,0), HexColor("#003366")),
+            ('TEXTCOLOR', (0,0),(-1,0), colors.whitesmoke),
+            ('ROWBACKGROUNDS',(0,1),(-1,-1),
+                (HexColor("#F4F7FA"), colors.white)),
+            ('GRID',(0,0),(-1,-1), .25, GRID),
+            ('ALIGN',(0,0),(-1,-1),'CENTER'),
+            ('VALIGN',(0,0),(-1,-1),'MIDDLE')
+        ]))
+        story.append(tbl)
+
+    doc.build(story)
+    buffer.seek(0)
+    from datetime import date
+    fname = f"{short.replace(' ','_')}_{category.replace(' ','_')}_{date.today()}.pdf"
+    return send_file(buffer, as_attachment=True,
+                     download_name=fname,
+                     mimetype='application/pdf')
 
 
 @app.route('/create_account', methods=['POST'])
@@ -1435,6 +1682,19 @@ def set_stock_level(item_id):
                 VALUES (?, ?, ?, ?, ?)
             ''', (user_id, item_id, item['in_stock_level'], new_stock_level, item['store_address']))
 
+            # NEW – keep only the 100 newest rows of this user
+            cursor.execute('''
+                DELETE FROM stock_updates
+                      WHERE user_id = ?
+                        AND id NOT IN (
+                            SELECT id
+                              FROM stock_updates
+                             WHERE user_id = ?
+                          ORDER BY updated_at DESC
+                             LIMIT 100
+                        )
+            ''', (user_id, user_id))
+
             # Update item stock
             cursor.execute('''
                 UPDATE items 
@@ -1521,26 +1781,39 @@ def stock_update_history():
         # Process data with proper structure
         user_history = defaultdict(lambda: {
             'username': None,
-            'category': None,
-            'store': None,
-            'records': []
+            'records' : [],
+            '_seen'   : set()          # internal helper – will strip later
         })
 
-        for entry in raw_history:
-            user_entry = user_history[entry['username']]
-            if not user_entry['username']:
-                user_entry['username'] = entry['username']
-                user_entry['category'] = entry['category']
-                user_entry['store'] = entry['store_address']
+        for row in raw_history:
+            u            = row['username']
+            cat          = row['category'] or 'Uncategorised'
+            store_addr   = row['store_address']
+            ts_min      = row['updated_at'][:16]          # keep up to min
+            composite_id = (cat, store_addr, ts_min)
 
-            user_entry['records'].append({
-                'id': entry['id'],
-                'item_name': entry['item_name'],
-                'stock_before': entry['stock_before'],
-                'stock_after': entry['stock_after'],
-                'updated_at': entry['updated_at'],
-                'store_address': entry['store_address']
+            usr = user_history[u]
+            if usr['username'] is None:
+                usr['username'] = u
+
+            # skip duplicates arriving in the same batch
+            if composite_id in usr['_seen']:
+                continue
+            usr['_seen'].add(composite_id)
+
+            usr['records'].append({
+                'id'           : row['id'],        # one representative id
+                'category'     : cat,
+                'updated_at'   : row['updated_at'],
+                'store_address': store_addr
             })
+
+        # drop the helper set before shipping to the client
+        for usr in user_history.values():
+            usr.pop('_seen', None)
+            # NEW – sort newest-first and slice to 100
+            usr['records'].sort(key=lambda r: r['updated_at'], reverse=True)
+            usr['records'] = usr['records'][:100]
 
         return jsonify(list(user_history.values()))
 
@@ -1550,6 +1823,57 @@ def stock_update_history():
     except Exception as e:
         app.logger.error(f"Unexpected error: {str(e)}")
         return jsonify({'message': 'Internal server error'}), 500
+
+
+def batch_second(record_id):
+    """Return (timestamp-to-sec, store, category) for any stock_updates.id"""
+    with get_db_connection() as c:
+        cur = c.cursor()
+        cur.execute('''
+            SELECT strftime('%Y-%m-%d %H:%M:%S', su.updated_at)   AS ts_sec,
+                   i.category                                     AS cat,
+                   su.store_address                              AS store
+              FROM stock_updates su
+              JOIN items i ON su.item_id = i.id
+             WHERE su.id = ?
+        ''', (record_id,))
+        return cur.fetchone()
+
+@app.route('/suppliers', methods=['GET', 'POST'])
+def suppliers():
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+
+        if request.method == 'POST':
+            suppliers = request.json.get('suppliers', [])
+            cursor.execute('DELETE FROM suppliers')
+            for supplier in suppliers:
+                cursor.execute('INSERT INTO suppliers (name) VALUES (?)', (supplier.strip(),))
+            conn.commit()
+            return jsonify({'message': 'Suppliers updated globally for all stores'})
+
+        # 确保返回包含id和name的对象列表
+        cursor.execute('SELECT id, name FROM suppliers')
+        suppliers = [dict(id=row[0], name=row[1]) for row in cursor.fetchall()]
+        return jsonify(suppliers)
+
+@app.route('/suppliers/<int:supplier_id>', methods=['DELETE'])
+def delete_supplier(supplier_id):
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            # 首先检查是否有物品使用此供应商
+            cursor.execute('SELECT COUNT(*) FROM items WHERE supplier_id = ?', (supplier_id,))
+            if cursor.fetchone()[0] > 0:
+                return jsonify({
+                    'message': 'Cannot delete supplier - items are still associated with it'
+                }), 400
+
+            cursor.execute('DELETE FROM suppliers WHERE id = ?', (supplier_id,))
+            conn.commit()
+            return jsonify({'message': 'Supplier deleted successfully'}), 200
+        except sqlite3.Error as e:
+            return jsonify({'error': str(e)}), 500
 
 @app.route('/logout')
 def logout():
@@ -1572,6 +1896,21 @@ def cleanup_stock_history():
                 WHERE updated_at < datetime('now', '-30 days', 'localtime')
             ''')
 
+            # B. NEW – size based cleanup (100-row cap per user)
+            cursor.execute('''
+                DELETE FROM stock_updates
+                      WHERE id IN (
+                          SELECT id FROM (
+                              SELECT id,
+                                     ROW_NUMBER() OVER
+                                         (PARTITION BY user_id
+                                          ORDER BY updated_at DESC) AS rn
+                                FROM stock_updates
+                          )
+                          WHERE rn > 100
+                      )
+            ''')
+
             # Get cleanup metrics
             deleted_count = cursor.rowcount
             cursor.execute('''SELECT COUNT(*) FROM stock_updates''')
@@ -1590,6 +1929,28 @@ def cleanup_stock_history():
     except Exception as e:
         app.logger.error(f"Unexpected error in 30-day cleanup: {str(e)}")
         conn.rollback()
+
+def get_units():
+    with get_db_connection() as c:
+        cur = c.cursor()
+        cur.execute('SELECT name FROM units')
+        return [r['name'] for r in cur.fetchall()]
+
+@app.route('/units', methods=['GET', 'POST'])
+def units():
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        if request.method == 'POST':
+            names = request.json.get('units', [])
+            cur.execute('DELETE FROM units')
+            for n in names:
+                cur.execute('INSERT INTO units (name) VALUES (?)', (n.strip(),))
+            conn.commit()
+            return jsonify({'message': 'Units updated'})
+        # --- GET ---
+        cur.execute('SELECT name FROM units')
+        return jsonify([r['name'] for r in cur.fetchall()])
+
 
 # Configure scheduler to run daily at 2 AM
 scheduler.add_job(

@@ -30,41 +30,12 @@
             max-width: 300px;
             margin: 0 auto 20px;
         }
-        .has-update {
-            background-color: #e3f2fd !important;
-            border: 1px solid #2196F3 !important;
-        }
-        .btn-delete-history {
-            padding: 3px 8px;
-            font-size: 0.8rem;
-            transition: all 0.2s ease;
-            border-radius: 4px;
-        }
 
-        .btn-delete-history:hover {
-            transform: scale(1.05);
-            box-shadow: 0 2px 6px rgba(220,53,69,0.3);
-        }
-        .accordion-button:not(.collapsed) {
-            background-color: #f8f9fa;
-        }
-        .accordion-body {
-            padding: 0.5rem;
-        }
         .history-table th {
             font-size: 0.9rem;
         }
         .history-table td {
             font-size: 0.85rem;
-        }
-
-        .btn-danger.btn-sm.delete-btn {
-            min-width: 80px; /* 设定最小宽度 */
-            padding: 0.25rem 0.5rem;
-        }
-
-        .bi-trash {
-            vertical-align: middle; /* 图标垂直居中 */
         }
 
         .table th {
@@ -89,6 +60,10 @@
 
         button[aria-expanded="true"] .toggle-icon {
             transform: rotate(180deg);
+        }
+
+        @media (max-width: 576px) {          /* phones only */
+            .btn { width: 100%; margin-bottom: 10px; }
         }
     </style>
 </head>
@@ -141,14 +116,14 @@
             <div class="table-responsive">
                 <table class="table table-striped">
                     <thead>
-                    <tr>
-                        <th>ID</th>
+                      <tr>
+                        <th class="d-none d-sm-table-cell">ID</th>
                         <th>Name</th>
-                        <th>Category</th>
-                        <th>Current Stock</th>
-                        <th>Supplier</th>
-                        <th>Update Stock</th>
-                    </tr>
+                        <th class="d-none d-sm-table-cell">Category</th>
+                        <th>Stock</th>
+                        <th class="d-none d-sm-table-cell">Supplier</th>
+                        <th>Update</th>
+                      </tr>
                     </thead>
                     <tbody id="managerAuditTableBody"></tbody>
                 </table>
@@ -159,13 +134,13 @@
         </div>
     </div>
 
-    <!-- Inventory History -->
+
+    <!----- Stock Update History – identical to owner ‑-->
     <div class="card p-3 mb-3">
-        <h3>Inventory History</h3>
-        <div class="accordion" id="historyAccordion">
-            <!-- 手风琴内容将通过JavaScript动态填充 -->
-        </div>
+        <h3>Stock Update History</h3>
+        <div class="accordion" id="historyAccordion"><!-- JS fills --></div>
     </div>
+
 
     <!-- Exit Section -->
     <div class="mt-3 text-center">
@@ -189,7 +164,7 @@
         document.getElementById('warningStore').textContent = storeDisplayName;
 
         fetchCategoriesForManager();
-        loadHistory();
+        loadManagerHistory();
         fetchStockWarningsForManager();
     });
 
@@ -227,21 +202,21 @@
 
             const auditTableBody = document.getElementById('managerAuditTableBody');
             auditTableBody.innerHTML = filteredItems.map(item => `
-                <tr class="${item.in_stock_level <= item.reorder_level ? 'restock-needed' : ''}">
-                    <td>${item.id}</td>
-                    <td>${item.name}</td>
-                    <td>${item.category}</td>
-                    <td>${formatWithUnit(item.in_stock_level, item.unit)}</td>
-                    <td>${item.supplier || 'N/A'}</td>
-                    <td>
-                        <input type="number"
-                               id="correctedStock_${item.id}"
-                               class="form-control form-control-sm ${pendingUpdates[item.id] ? 'has-update' : ''}"
-                               value="${pendingUpdates[item.id] || item.in_stock_level}"
-                               min="0"
-                           onchange="handleStockUpdate(${item.id}, this.value)">
-                    </td>
-                </tr>
+              <tr class="${item.in_stock_level <= item.reorder_level ? 'restock-needed' : ''}">
+                <td class="d-none d-sm-table-cell">${item.id}</td>
+                <td>${item.name}</td>
+                <td class="d-none d-sm-table-cell">${item.category}</td>
+                <td>${formatWithUnit(item.in_stock_level, item.unit)}</td>
+                <td class="d-none d-sm-table-cell">${item.supplier || 'N/A'}</td>
+                <td>
+                  <input type="number"
+                         id="correctedStock_${item.id}"
+                         class="form-control form-control-sm ${pendingUpdates[item.id] ? 'has-update' : ''}"
+                         value="${pendingUpdates[item.id] || item.in_stock_level}"
+                         min="0"
+                         onchange="handleStockUpdate(${item.id}, this.value)">
+                </td>
+              </tr>
             `).join('');
 
             checkSection.classList.remove('d-none');
@@ -317,120 +292,94 @@
         document.querySelectorAll('.has-update').forEach(el =>
                 el.classList.remove('has-update')
         );
-        loadHistory();
+        loadManagerHistory();
+    }
+    async function loadManagerHistory() {
+        /* ask ONLY for the manager’s store */
+        const response = await fetch(
+            `/stock_update_history?store=${encodeURIComponent(currentStore)}`
+        );
+        const userHistoryList = await response.json();
+        const accordion = document.getElementById('historyAccordion');
+        accordion.innerHTML = '';
+
+        userHistoryList.forEach((user, idx) => {
+            const cid = `mgrHist${idx}`;
+            accordion.insertAdjacentHTML('beforeend', `
+              <div class="accordion-item">
+                <h2 class="accordion-header">
+                  <button class="accordion-button" type="button"
+                          data-bs-toggle="collapse" data-bs-target="#${cid}">
+                      ${user.username} (${user.records.length} updates)
+                  </button>
+                </h2>
+                <div id="${cid}" class="accordion-collapse collapse show">
+                  <div class="accordion-body p-0">
+                    <div class="table-responsive">
+                      <table class="table table-sm table-hover">
+                        <thead>
+                          <tr>
+                            <th>Date</th>
+                            <th>Category</th>
+                            <th>Store</th>
+                            <th class="text-center">PDF</th>
+                            <th class="text-center">Delete</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          ${user.records.map(r => `
+                            <tr>
+                              <td>${new Date(r.updated_at).toLocaleString()}</td>
+                              <td>${r.category}</td>
+                              <td>${r.store_address.split(',')[0]}</td>
+                              <td class="text-center">
+                                <button class="btn btn-sm btn-primary"
+                                        onclick="downloadCategoryUpdate('${r.category}',
+                                                                        '${r.store_address}',
+                                                                        '${user.username}',
+                                                                         ${r.id})">
+                                  <i class="bi bi-file-earmark-pdf"></i>
+                                </button>
+                              </td>
+                              <td class="text-center">
+                                <button class="btn btn-sm btn-outline-danger"
+                                        onclick="deleteSingleRecord(${r.id})">
+                                  <i class="bi bi-trash"></i>
+                                </button>
+                              </td>
+                            </tr>`).join('')}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              </div>`);
+        });
     }
 
-    async function loadHistory() {
-        try {
-            const response = await fetch('/stock_update_history');
-            const userHistoryList = await response.json();
-            const accordionContainer = document.getElementById('historyAccordion');
-            accordionContainer.innerHTML = "";
-
-            userHistoryList.forEach((userHistory, index) => {
-                const collapseId = `userCollapse${index}`;
-                const accordionItem = `
-                    <div class="accordion-item">
-                        <h2 class="accordion-header">
-                            <button class="accordion-button"
-                                    type="button"
-                                    data-bs-toggle="collapse"
-                                    data-bs-target="#${collapseId}">
-                                ${userHistory.username} (${userHistory.records.length} updates)
-                            </button>
-                        </h2>
-                        <div id="${collapseId}" class="accordion-collapse collapse show">
-                            <div class="accordion-body p-0">
-                                <div class="table-responsive">
-                                    <table class="table table-sm table-hover">
-                                        <thead>
-                                            <tr>
-                                                <th>Date</th>
-                                                <th>Item</th>
-                                                <th>Store</th>
-                                                <th>Before</th>
-                                                <th>After</th>
-                                                <th>Δ Change</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            ${userHistory.records.map(record => `
-                        <tr data-record-id="${record.id}">
-                        <td>${new Date(record.updated_at).toLocaleString()}</td>
-                                                    <td>${record.item_name}</td>
-                                                    <td>${record.store_address.split(',')[0]}</td>
-                                                    <td>${record.stock_before}</td>
-                                                    <td>${record.stock_after}</td>
-                                                    <td class="${record.stock_after - record.stock_before >= 0
-                        ? 'text-success'
-                        : 'text-danger'}">
-                                                        ${record.stock_after - record.stock_before}
-                                                    </td>
-                                                    
-                                                </tr>
-                                            `
-            ).
-                join('')
-            }
-        </tbody>
-        </table>
-        </div>
-        </div>
-        </div>
-        </div>
-            `;
-                accordionContainer.insertAdjacentHTML('beforeend', accordionItem);
-            });
-
-        } catch (error) {
-            console.error('Error loading history:', error);
-            showToast(`Error: ${error.message}`, 'danger');
-        }
+    async function deleteSingleRecord(id) {
+        if (!confirm('Delete this batch?')) return;
+        const r = await fetch(`/delete_stock_update/${id}`, {method:'DELETE'});
+        if (r.ok) loadManagerHistory();          // refresh
+        else      alert((await r.json()).message || 'Delete failed');
     }
 
-        // 确保已添加删除函数
-        async function deleteHistoryRecord(recordId) {
-        if (!confirm('Are you sure you want to delete this record?')) return;
-
-        try {
-            // Debugging logs
-            console.log('Attempting to delete record:', recordId);
-            console.log('Session Token:', sessionToken);
-
-            const response = await fetch(`/delete_stock_update/${recordId}`, {
-                method: 'DELETE',
-                headers: {
-                    'Authorization': 'Bearer ' + sessionToken,
-                    'X-Requested-With': 'XMLHttpRequest',
-                    'Content-Type': 'application/json'
-                }
-            });
-
-            console.log('Response status:', response.status);
-
-            if (response.ok) {
-                const result = await response.json();
-                console.log('Delete success:', result);
-
-                // Check if record row exists in DOM
-                const row = document.querySelector(`tr[data-record-id="${recordId}"]`);
-                if (row) {
-                    row.remove();
-                    showToast('Record deleted successfully!', 'success');
-                } else {
-                    console.warn('Corresponding row not found, performing full refresh');
-                    loadHistory();
-                }
-            } else {
-                console.error('Delete failed with status:', response.status);
-                const errorText = await response.text();
-                throw new Error(errorText || `Deletion failed.Status code: ${response.status}`);
-            }
-        } catch (error) {
-            console.error('Error during deletion:', error);
-            showToast(`Deletion failed: ${error.message}`, 'danger', 5000);
-        }
+    async function downloadCategoryUpdate(cat, store, user, id) {
+        const url = `/download_category_update_report`
+                  + `?record=${id}&category=${encodeURIComponent(cat)}`
+                  + `&store=${encodeURIComponent(store)}`
+                  + `&employee=${encodeURIComponent(user)}`;
+        const r   = await fetch(url);
+        if (!r.ok){ alert('PDF failed'); return; }
+        const blob = await r.blob();
+        const a    = document.createElement('a');
+        a.href      = URL.createObjectURL(blob);
+        a.download  = `Update_${store.split(',')[0].replace(/\s+/g,'_')}_${cat}.pdf`;
+        document.body.appendChild(a); a.click(); a.remove();
     }
+
+    /* load on startup */
+    document.addEventListener('DOMContentLoaded', loadManagerHistory);
     // 添加辅助通知函数
     function showToast(message, type = 'info') {
         const toast = document.createElement('div');
