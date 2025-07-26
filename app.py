@@ -139,6 +139,18 @@ def init_db():
         cursor.execute(
             ''' CREATE TABLE IF NOT EXISTS units ( id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL ) ''')
 
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS stores (
+                id   INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL        -- full address string
+        )
+        ''')
+
+        cursor.executemany(
+            'INSERT OR IGNORE INTO stores (name) VALUES (?)',
+            [('Kusan Uyghur Cuisine, 1516 N 4th Street, San Jose, CA 95112',),
+             ('Kusan Bazaar, 510 Barber Ln, Milpitas, CA 95035',)]
+        )
 
         # Default data setup
         cursor.execute('INSERT OR IGNORE INTO categories (name) VALUES (?)', ("Default",))
@@ -231,10 +243,7 @@ def login():
 # Route for registration
 @app.route('/register', methods=['GET', 'POST'])
 def register():
-    VALID_STORES = [
-        "Kusan Uyghur Cuisine, 1516 N 4th Street, San Jose, CA 95112",
-        "Kusan Bazaar, 510 Barber Ln, Milpitas, CA 95035"
-    ]
+
 
     if request.method == 'POST':
         data = request.get_json()
@@ -248,7 +257,7 @@ def register():
             return jsonify({'message': f'Missing fields: {", ".join(missing)}'}), 400
 
         # Validate store address
-        if data['store_address'] not in VALID_STORES:
+        if data['store_address'] not in get_stores():
             return jsonify({'message': 'Invalid store selection'}), 400
 
         try:
@@ -494,7 +503,7 @@ def handle_owner_post_request():
         # -----------------------------------------------------------------
         if store_address == 'all':
             inserted, skipped = 0, []
-            for store in VALID_STORES:
+            for store in get_stores():
                 local_data              = dict(data)           # shallow copy
                 local_data['store_address'] = store
                 validated = validate_item_data(local_data)     # existing helper
@@ -603,7 +612,7 @@ def handle_owner_get_request():
 
     return render_template('owner_dashboard.html',
                            items=items,
-                           valid_stores=VALID_STORES,
+                           valid_stores=get_stores(),
                            selected_store=store_filter)
 
 
@@ -626,7 +635,7 @@ def validate_item_data(data):
         'reorder_level'   : (int, lambda x: x >= 0),
         'supplier_id': (int, lambda x: x > 0),  # 改为验证supplier_id
         # accept real store addresses OR the keyword "all"
-        'store_address'   : (str, lambda x: x in VALID_STORES or x.lower() == 'all')
+        'store_address'   : (str, lambda x: x in get_stores() or x.lower() == 'all')
     }
 
     validated = {}
@@ -751,6 +760,20 @@ def categories():
         cursor.execute('SELECT name FROM categories')
         return jsonify([row['name'] for row in cursor.fetchall()])
 
+@app.route('/stores', methods=['GET', 'POST'])
+def stores():
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        if request.method == 'POST':
+            names = request.json.get('stores', [])
+            cur.execute('DELETE FROM stores')
+            for n in names:
+                cur.execute('INSERT INTO stores (name) VALUES (?)', (n.strip(),))
+            conn.commit()
+            return jsonify({'message': 'Store list updated'})
+        cur.execute('SELECT name FROM stores')
+        return jsonify([r['name'] for r in cur.fetchall()])
+
 
 # Route for managing accounts with multi-store support
 @app.route('/accounts', methods=['GET', 'POST'])
@@ -855,10 +878,6 @@ def accounts():
 
 @app.route('/update_account/<int:account_id>', methods=['POST'])
 def update_account(account_id):
-    VALID_STORES = [
-        "Kusan Uyghur Cuisine, 1516 N 4th Street, San Jose, CA 95112",
-        "Kusan Bazaar, 510 Barber Ln, Milpitas, CA 95035"
-    ]
 
     data = request.json
     required_fields = ['username', 'role', 'employee_name', 'store_address', 'phone_number', 'email']
@@ -899,7 +918,7 @@ def update_account(account_id):
             # Owner-specific validation
             if current_user_role == 'owner':
                 # Validate store address for owner edits
-                if data['store_address'] not in VALID_STORES:
+                if data['store_address'] not in get_stores():
                     return jsonify({'message': 'Invalid store address'}), 400
 
                 # Ensure at least one owner remains
@@ -1267,10 +1286,6 @@ def delete_user_stock_updates(username):
 @app.route('/download_stock_report', methods=['GET'])
 def download_stock_report():
     """Generate store-specific stock warning PDF report using Platypus Table."""
-    VALID_STORES = [
-        "Kusan Uyghur Cuisine, 1516 N 4th Street, San Jose, CA 95112",
-        "Kusan Bazaar, 510 Barber Ln, Milpitas, CA 95035"
-    ]
 
     # Authorization check
     if 'authorized' not in session:
@@ -1287,7 +1302,7 @@ def download_stock_report():
     if current_role != 'owner' and store_filter != current_store:
         return jsonify({'message': 'Unauthorized to access this store'}), 403
 
-    if store_filter not in VALID_STORES:
+    if store_filter not in get_stores():
         return jsonify({'message': 'Invalid store selection'}), 400
 
     short_name = store_filter.split(',')[0].strip()
@@ -1536,10 +1551,6 @@ def download_category_update_report():
 
 @app.route('/create_account', methods=['POST'])
 def create_account():
-    VALID_STORES = [
-        "Kusan Uyghur Cuisine, 1516 N 4th Street, San Jose, CA 95112",
-        "Kusan Bazaar, 510 Barber Ln, Milpitas, CA 95035"
-    ]
 
     # Authorization check
     if 'authorized' not in session:
@@ -1569,7 +1580,7 @@ def create_account():
                 store_address = current_store  # Force current store for non-owners
 
             # Verify store is valid
-            if store_address not in VALID_STORES:
+            if store_address not in get_stores():
                 return jsonify({'message': 'Invalid store address'}), 400
 
             # Prevent role escalation
@@ -1756,14 +1767,13 @@ def stock_update_history():
         filters = []
 
         # Validate store filter format
-        valid_stores = ["Kusan Uyghur Cuisine, 1516 N 4th Street, San Jose, CA 95112",
-                        "Kusan Bazaar, 510 Barber Ln, Milpitas, CA 95035"]
+
 
         if current_role != 'owner':
             filters.append('su.store_address = ?')
             params.append(session.get('store_address'))
         elif store_filter.lower() != 'all':
-            if store_filter not in valid_stores:
+            if store_filter not in get_stores():
                 return jsonify({'message': 'Invalid store filter'}), 400
             filters.append('su.store_address = ?')
             params.append(store_filter)
@@ -1936,6 +1946,12 @@ def get_units():
         cur.execute('SELECT name FROM units')
         return [r['name'] for r in cur.fetchall()]
 
+def get_stores():
+    with get_db_connection() as c:
+        cur = c.cursor()
+        cur.execute('SELECT name FROM stores')
+        return [r['name'] for r in cur.fetchall()]
+
 @app.route('/units', methods=['GET', 'POST'])
 def units():
     with get_db_connection() as conn:
@@ -1965,7 +1981,7 @@ scheduler.add_job(
 
 @app.before_request
 def check_authorization():
-    if request.endpoint not in ['login', 'register', 'static']:
+    if request.endpoint not in ['login', 'register', 'static', 'stores']:
         # Enhanced security checks
         if not all(key in session for key in ('user_id', 'role', 'store_address', '_csrf_validated')):
             session.clear()

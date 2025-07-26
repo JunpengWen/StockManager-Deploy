@@ -58,14 +58,9 @@
 
                             <div class="mb-4">
                                 <label for="store_address" class="form-label">Store</label>
-                                <select id="store_address" name="store_address" class="form-select" required>
-                                    <option value="" disabled selected>Select store</option>
-                                    <option value="Kusan Uyghur Cuisine, 1516 N 4th Street, San Jose, CA 95112">
-                                        San Jose Store
-                                    </option>
-                                    <option value="Kusan Bazaar, 510 Barber Ln, Milpitas, CA 95035">
-                                        Milpitas Store
-                                    </option>
+                                <select id="store_address" name="store_address"
+                                        class="form-select" required>
+                                    <option value="" disabled selected>Loading stores…</option>
                                 </select>
                             </div>
 
@@ -121,6 +116,18 @@
                 alert('An error occurred during registration. Please try again.');
             }
         });
+
+        /* --- populate Store drop-down from the master list --- */
+        async function loadStores() {
+            const res  = await fetch('/stores');
+            const list = await res.json();          // ["Kusan … SJ", "Kusan … Milpitas", …]
+            const sel  = document.getElementById('store_address');
+            sel.innerHTML = '<option value="" disabled selected>Select store</option>' +
+                            list.map(s =>
+                                `<option value="${s}">${s.split(',')[0]}</option>`
+                            ).join('');
+        }
+        document.addEventListener('DOMContentLoaded', loadStores);
     </script>
 </body>
 </html>

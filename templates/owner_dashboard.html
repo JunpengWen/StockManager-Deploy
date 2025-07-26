@@ -131,6 +131,10 @@
                                 <li> <a class="dropdown-item" href="javascript:void(0)" onclick="showEditUnitForm()">
                                     <i class="bi bi-rulers"></i> Manage Units </a>
                                 </li>
+                                <li><a class="dropdown-item" href="javascript:void(0)" onclick="showEditStoreForm()">
+                                    <i class="bi bi-shop"></i> Manage Stores
+                                </a></li>
+
                                 <li><hr class="dropdown-divider"></li>
                                 <li><a class="dropdown-item" href="javascript:void(0)" onclick="showSettingAccountForm()">
                                     <i class="bi bi-person-plus"></i> Create New Account</a></li>
@@ -180,7 +184,7 @@
                                 </div>
                                 <div class="col-md-6">
                                     <label class="form-label">Store Selection</label>
-                                    <select class="form-select" id="itemStore" required>
+                                    <select class="form-select store-select" id="itemStore" required>
                                         <option value="all">All Stores</option>
                                         {% for store in valid_stores %}
                                         <option value="{{ store }}">{{ store.split(',')[0] }}</option>
@@ -248,7 +252,7 @@
                                 </div>
                                 <div class="col-md-6">
                                     <label class="form-label">Store</label>
-                                    <select class="form-select" id="createStoreAddress" required>
+                                    <select class="form-select store-select" id="createStoreAddress" required>
                                         {% for store in valid_stores %}
                                         <option value="{{ store }}">{{ store.split(',')[0] }}</option>
                                         {% endfor %}
@@ -310,7 +314,7 @@
                     <button class="btn btn-danger" onclick="downloadMultiStoreReport()">
                         <i class="bi bi-file-earmark-pdf"></i> Download Report
                     </button>
-                    <select class="form-select" id="warningStoreFilter" onchange="fetchStockWarnings()">
+                    <select class="form-select store-select" id="warningStoreFilter" onchange="fetchStockWarnings()">
                         <option value="all">All Stores</option>
                         {% for store in valid_stores %}
                         <option value="{{ store }}">{{ store.split(',')[0] }}</option>
@@ -327,7 +331,7 @@
             <div class="row g-3">
                 <div class="col-md-6">
                     <label class="form-label">Store</label>
-                    <select class="form-select" id="checklistStoreFilter" onchange="loadStoreCategories(this.value)">
+                    <select class="form-select store-select" id="checklistStoreFilter" onchange="loadStoreCategories(this.value)">
                         <option value="all">All Stores</option>
                         {% for store in valid_stores %}
                         <option value="{{ store }}">{{ store.split(',')[0] }}</option>
@@ -545,7 +549,7 @@
                             </div>
                             <div class="col-md-6">
                                 <label class="form-label">Store</label>
-                                <select class="form-select" id="editStoreAddress" required>
+                                <select class="form-select store-select" id="editStoreAddress" required>
                                     {% for store in valid_stores %}
                                     <option value="{{ store }}">{{ store.split(',')[0] }}</option>
                                     {% endfor %}
@@ -609,7 +613,7 @@
                             </div>
                             <div class="col-md-6">
                                 <label class="form-label">Store</label>
-                                <select class="form-select" id="editItemStore" {% if session.role != 'owner' %}disabled{% endif %} required>
+                                <select class="form-select store-select" id="editItemStore" {% if session.role != 'owner' %}disabled{% endif %} required>
                                     {% for store in valid_stores %}
                                     <option value="{{ store }}">{{ store.split(',')[0] }}</option>
                                     {% endfor %}
@@ -743,6 +747,28 @@
       </div>
     </div>
 
+    <!-- ── STORE MANAGEMENT MODAL ────────────────────────── -->
+    <div class="modal fade" id="storeModal" tabindex="-1" aria-labelledby="storeModalLabel">
+      <div class="modal-dialog"><div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="storeModalLabel">Manage Stores</h5>
+          <button class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div id="storeList" class="mb-3"></div>
+          <div class="input-group">
+            <input id="newStore" class="form-control" placeholder="Full address">
+            <button class="btn btn-primary" onclick="addStore()">Add</button>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+          <button class="btn btn-primary" onclick="saveStores()">Save Changes</button>
+        </div>
+      </div></div>
+    </div>
+
+
 
     <div class="modal fade" id="historyModal" tabindex="-1" aria-labelledby="historyModalLabel" aria-hidden="true">
         <div class="modal-dialog modal-xl">
@@ -796,6 +822,9 @@
             return unit ? `${value} ${unit}` : value;
         }
 
+        document.addEventListener('DOMContentLoaded', initializeStores);
+
+
         // 添加成功提示函数
         function showSuccessAlert(message) {
             const alertDiv = document.createElement('div');
@@ -818,6 +847,7 @@
 
         // 在现有的脚本代码中添加以下函数
         async function showAddItemForm() {
+             await initializeStores();
             // 加载类别数据
             const categorySelect = document.getElementById('itemCategory');
             categorySelect.innerHTML = '<option value="">Loading categories...</option>';
@@ -856,7 +886,7 @@
                 max_stock_level: parseInt(document.getElementById('maxStock').value),
                 in_stock_level: parseInt(document.getElementById('inStock').value),
                 reorder_level: parseInt(document.getElementById('reorderLevel').value),
-                supplier: document.getElementById('supplier').value.trim(),
+                supplier_id: parseInt(document.getElementById('addItemSupplier').value, 10),
                 unit: document.getElementById('itemUnit').value,
                 store_address: document.getElementById('itemStore').value
             };
@@ -882,8 +912,11 @@
                 }
 
                 // Success handling
-                //showSuccessAlert('Item added successfully!');
-               // window.location.reload();
+                showSuccessAlert('Item added successfully!');
+                bootstrap.Modal.getInstance(addItemModal).hide();
+                event.target.reset();
+                initializeStores();
+                loadStoreItems();
 
             } catch (error) {
                 handleNetworkError(error);
@@ -950,7 +983,8 @@
 
             // 获取supplier值 - 修改这里
             const supplierSelect = document.getElementById('supplierSelect');
-            const supplierId = supplierSelect.value;
+
+            const supplierId = supplierSelect.value || null
 
             const itemData = {
                 name: document.getElementById('inlineItemName').value.trim(),
@@ -971,6 +1005,10 @@
 
             if (itemData.reorder_level >= itemData.max_stock_level) {
                 alert('Reorder Level must be less than Max Stock');
+                return;
+            }
+            if (!supplierId) {
+                alert('Please choose a Supplier first');
                 return;
             }
 
@@ -1848,37 +1886,42 @@
 
 
         // Checklist & Inventory Management
-        async function loadStoreCategories(storeAddress) {
-            const categoryDropdown = document.getElementById('ownerCategoryDropdown');
+        async function loadStoreCategories(storeAddr) {
+            const catSelect = document.getElementById('ownerCategoryDropdown');
+            catSelect.disabled  = true;
+            catSelect.innerHTML = '<option value="">Loading…</option>';
 
             try {
-                const response = await fetch(`/items?store=${encodeURIComponent(storeAddress)}`);
-                const items = await response.json();
+                const res   = await fetch(`/items?store=${encodeURIComponent(storeAddr)}`);
+                const items = await res.json();
+                let   cats  = [...new Set(items.map(i => i.category))].filter(Boolean);
 
-                const categories = [...new Set(items.map(item => item.category))]
-                                  .filter(c => c) // Remove empty/undefined
-                                  .sort();
-
-                categoryDropdown.innerHTML = categories.map(c =>
+                /* Fallback: use master list if the store is still empty */
+                if (cats.length === 0) {
+                    cats = await (await fetch('/categories')).json();
+                }
+                catSelect.innerHTML = cats.map(c =>
                     `<option value="${c}">${c}</option>`
                 ).join('');
-                categoryDropdown.disabled = false;
+                catSelect.disabled = false;
 
-                // Initialize items list after categories load
                 loadStoreItems();
-
-            } catch (error) {
-                console.error('Category load error:', error);
-                categoryDropdown.innerHTML = '<option value="">Error loading categories</option>';
+            } catch (err) {
+                console.error('Category load error:', err);
+                catSelect.innerHTML = '<option value="">Error loading categories</option>';
             }
         }
+
 
         async function loadStoreItems() {
             const storeAddress = document.getElementById('checklistStoreFilter').value;
             const category = document.getElementById('ownerCategoryDropdown').value;
 
             try {
-                const response = await fetch(`/items?store=${encodeURIComponent(storeAddress)}`);
+                const url = storeAddress === 'all'
+                    ? '/items'
+                    : `/items?store=${encodeURIComponent(storeAddress)}`;
+                const response = await fetch(url);
                 const items = await response.json();
                 const filteredItems = category ? items.filter(item => item.category === category) : items;
 
@@ -2483,6 +2526,64 @@
                 errorDiv.classList.remove('d-none');
             }
         }
+
+        /* ---------- STORE helpers (re-entrant-safe) ---------------- */
+        async function initializeStores() {
+            const res  = await fetch('/stores');
+            const list = await res.json();                   //   ["Kusan … SJ",  "Kusan … Milpitas"]
+
+            document.querySelectorAll('.store-select').forEach(sel => {
+                const previous = sel.value;                  // remember user’s current choice
+
+                /* rebuild the option list from scratch */
+                let html = list.map(
+                    s => `<option value="${s}">${s.split(',')[0]}</option>`
+                ).join('');
+
+                /* always offer the broadcast option first */
+                html = `<option value="all">All Stores</option>` + html;
+
+                sel.innerHTML = html;                        // replace the whole list
+                if (previous) sel.value = previous;          // restore selection if still present
+            });
+
+            return list;
+        }
+
+
+        async function showEditStoreForm(){
+            const stores = await initializeStores();
+            const box = document.getElementById('storeList');
+            box.innerHTML = stores.map(s=>`
+                <div class="d-flex justify-content-between mb-2">
+                   <span>${s}</span>
+                   <button class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">&times;</button>
+                </div>`).join('');
+            new bootstrap.Modal(document.getElementById('storeModal')).show();
+        }
+
+        function addStore(){
+            const v = document.getElementById('newStore').value.trim();
+            if(!v) return;
+            document.getElementById('storeList').insertAdjacentHTML('beforeend',`
+                <div class="d-flex justify-content-between mb-2">
+                   <span>${v}</span>
+                   <button class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">&times;</button>
+                </div>`);
+            document.getElementById('newStore').value='';
+        }
+
+        async function saveStores(){
+            const stores = [...document.querySelectorAll('#storeList span')].map(s=>s.textContent);
+            await fetch('/stores',{
+                method:'POST',
+                headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({stores})
+            });
+            await initializeStores();                         // refresh selects
+            bootstrap.Modal.getInstance(document.getElementById('storeModal')).hide();
+        }
+
 
         // Initialize history on page load
         document.addEventListener('DOMContentLoaded', () => {
