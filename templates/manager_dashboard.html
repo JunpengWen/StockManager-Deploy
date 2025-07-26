@@ -329,16 +329,16 @@
                         <tbody>
                           ${user.records.map(r => `
                             <tr>
-                              <td>${new Date(r.updated_at).toLocaleString()}</td>
-                              <td>${r.category}</td>
-                              <td>${r.store_address.split(',')[0]}</td>
+                                                          <td>${new Date(r.updated_at).toLocaleString()}</td>
+                            <td>${r.category || 'N/A'}</td>
+                            <td>${r.store_address.split(',')[0]}</td>
                               <td class="text-center">
                                 <button class="btn btn-sm btn-primary"
-                                        onclick="downloadCategoryUpdate('${r.category}',
-                                                                        '${r.store_address}',
-                                                                        '${user.username}',
-                                                                         ${r.id})">
-                                  <i class="bi bi-file-earmark-pdf"></i>
+                                        onclick="downloadComprehensiveUpdate('${r.store_address}',
+                                                                              '${user.username}',
+                                                                               ${r.id},
+                                                                               '${r.category || ''}')">
+                                  <i class="bi bi-file-earmark-pdf"></i> ${r.category || 'Category'}
                                 </button>
                               </td>
                               <td class="text-center">
@@ -364,17 +364,19 @@
         else      alert((await r.json()).message || 'Delete failed');
     }
 
-    async function downloadCategoryUpdate(cat, store, user, id) {
-        const url = `/download_category_update_report`
-                  + `?record=${id}&category=${encodeURIComponent(cat)}`
+    async function downloadComprehensiveUpdate(store, user, id, category) {
+        const url = `/download_comprehensive_update_report`
+                  + `?record=${id}`
                   + `&store=${encodeURIComponent(store)}`
-                  + `&employee=${encodeURIComponent(user)}`;
+                  + `&employee=${encodeURIComponent(user)}`
+                  + `&category=${encodeURIComponent(category)}`;
         const r   = await fetch(url);
         if (!r.ok){ alert('PDF failed'); return; }
         const blob = await r.blob();
         const a    = document.createElement('a');
         a.href      = URL.createObjectURL(blob);
-        a.download  = `Update_${store.split(',')[0].replace(/\s+/g,'_')}_${cat}.pdf`;
+        const cat   = category.replace(/\s+/g,'_');
+        a.download  = `${cat}_Update_${store.split(',')[0].replace(/\s+/g,'_')}.pdf`;
         document.body.appendChild(a); a.click(); a.remove();
     }
 

@@ -499,18 +499,31 @@ def handle_owner_post_request():
             picture_path  = save_uploaded_file(picture) if picture else None
 
         # -----------------------------------------------------------------
-        # 2.  special case:  “all”  => duplicate into every VALID_STORE
+        # 2.  special case:  "all"  => duplicate into every VALID_STORE
         # -----------------------------------------------------------------
         if store_address == 'all':
             inserted, skipped = 0, []
-            for store in get_stores():
-                local_data              = dict(data)           # shallow copy
-                local_data['store_address'] = store
-                validated = validate_item_data(local_data)     # existing helper
+            stores = get_stores()
+            
+            if not stores:
+                return handle_error('No stores configured in the system', 400)
+            
+            # Use a single database connection for all stores to ensure consistency
+            with get_db_connection() as conn:
+                cursor = conn.cursor()
+                
+                for store in stores:
+                    local_data = dict(data)  # shallow copy
+                    local_data['store_address'] = store
+                    
+                    try:
+                        validated = validate_item_data(local_data)  # existing helper
+                    except ValidationError as e:
+                        # If validation fails for any store, rollback and return error
+                        conn.rollback()
+                        return handle_error(f'Validation error for {store}: {str(e)}', 400)
 
-                try:
-                    with get_db_connection() as conn:
-                        cursor = conn.cursor()
+                    try:
                         cursor.execute('''
                             INSERT INTO items (
                                 name, category, max_stock_level,
@@ -524,14 +537,26 @@ def handle_owner_post_request():
                             validated['supplier_id'], store,
                             validated['unit']
                         ))
-                        conn.commit()
                         inserted += 1
-                except sqlite3.IntegrityError:
-                    skipped.append(store)        # duplicate – ignore
+                    except sqlite3.IntegrityError:
+                        skipped.append(store)  # duplicate – ignore
+                        # Continue with next store instead of breaking
+                        continue
+                    except Exception as e:
+                        # If any other error occurs, rollback and return error
+                        conn.rollback()
+                        return handle_error(f'Error adding to {store}: {str(e)}', 500)
+                
+                # Commit all successful insertions at once
+                conn.commit()
 
-            msg = f'Added to {inserted} store(s).' \
-                  + (f'  Skipped (exists): {", ".join(s.split(",")[0] for s in skipped)}'
-                     if skipped else '')
+            # Build detailed success message
+            if inserted == 0:
+                msg = f'Item already exists in all stores: {", ".join(s.split(",")[0] for s in skipped)}'
+            elif inserted == len(stores):
+                msg = f'Successfully added to all {inserted} store(s)'
+            else:
+                msg = f'Added to {inserted} store(s). Skipped (exists): {", ".join(s.split(",")[0] for s in skipped)}'
 
             return jsonify({'message': msg}), 201 if request.is_json else \
                    flash(msg, 'success') or redirect(url_for('owner_dashboard'))
@@ -618,7 +643,7 @@ def handle_owner_get_request():
 
 # 辅助函数
 # ------------------------------------------------------------------------
-#  Item-data validator  –  now “store_address” may be the literal string
+#  Item-data validator  –  now "store_address" may be the literal string
 #  "all" so the Owner can duplicate an item into every real store.
 # ------------------------------------------------------------------------
 def validate_item_data(data):
@@ -1008,7 +1033,7 @@ def get_items():
         base   += ' AND i.store_address = ?'
         params += [store_filter]
 
-    # ► category limitation (only “front-line” roles are restricted)
+    # ► category limitation (only "front-line" roles are restricted)
     if current_role in ['employee','server','line_cook','prep_cook']:
         cats   = allowed_categories_for(user_id)
         if not cats:                    # no categories → no data
@@ -1312,13 +1337,12 @@ def download_stock_report():
         cursor.execute('''
             SELECT 
                 i.name,
-                i.category,
                 i.in_stock_level,
-                i.reorder_level,
                 i.max_stock_level,
                 i.unit,
                 s.name AS supplier_name,
-                u.employee_name AS updated_by
+                COALESCE(u.employee_name, 'System') AS updated_by,
+                su.updated_at AS last_updated
             FROM items i
             LEFT JOIN suppliers s ON i.supplier_id = s.id
             LEFT JOIN (
@@ -1332,20 +1356,19 @@ def download_stock_report():
             LEFT JOIN users u ON su.user_id = u.id
             WHERE i.in_stock_level <= i.reorder_level
             AND i.store_address = ?
-            ORDER BY i.category, s.name, i.name
+            ORDER BY s.name, i.name
         ''', (store_filter,))
         rows = cursor.fetchall()
 
         from collections import defaultdict
-        grouped = defaultdict(lambda: defaultdict(list))
+        grouped = defaultdict(list)
 
         def with_unit(n, unit):
             return f"{n} {unit}" if unit else str(n)
 
         for r in rows:
-            cat = r['category'] or 'Uncategorised'
-            supplier = r['supplier_name'] or 'Unknown supplier'  # Changed from r['supplier']
-            grouped[cat][supplier].append(r)
+            supplier = r['supplier_name'] or 'Unknown supplier'
+            grouped[supplier].append(r)
 
         buffer = io.BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=letter,
@@ -1353,18 +1376,9 @@ def download_stock_report():
                                 topMargin=48, bottomMargin=36)
 
         styles = getSampleStyleSheet()
-        headingCat = styles['Heading2']
-        headingSupp = styles['Heading3']
-        title = styles['Title']
-        title.fontSize = 14;
-        title.leading = 16
-        CATEGORY_CLR = HexColor("#0d6efd")  # Bootstrap primary-blue
         SUPPLIER_CLR = HexColor("#ff8800")  # warm orange
         from reportlab.lib.styles import ParagraphStyle
-        headingCat = ParagraphStyle('CatHead',
-                                    parent=styles['Heading2'],
-                                    textColor=CATEGORY_CLR)
-
+        
         headingSupp = ParagraphStyle('SuppHead',
                                      parent=styles['Heading3'],
                                      textColor=SUPPLIER_CLR)
@@ -1373,8 +1387,19 @@ def download_stock_report():
                                parent=styles['Title'],
                                fontSize=14,
                                leading=16)
+        
+        subtitle = ParagraphStyle('SubTitle',
+                                  parent=styles['Normal'],
+                                  fontSize=10,
+                                  leading=12,
+                                  textColor=HexColor("#666666"))
+
+        # Get current date and time
+        from datetime import datetime
+        current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         story = [Paragraph(f"{short_name} – Stock Warnings Report", title),
+                 Paragraph(f"Generated on: {current_datetime}", subtitle),
                  Spacer(1, 12)]
 
         if not rows:
@@ -1387,46 +1412,42 @@ def download_stock_report():
             RESTOCK_BG = HexColor("#FFF4CC")
             GRID_CLR = HexColor("#B0BEC5")
 
-            for category in sorted(grouped):
-                story.append(Paragraph(f"CATEGORY : {category.upper()}", headingCat))  # ← uses headingCat
-                story.append(Spacer(1, 6))
+            for supplier in sorted(grouped):
+                story.append(Paragraph(f"‣ Supplier: {supplier}", headingSupp))
+                story.append(Spacer(1, 4))
 
-                for supplier in sorted(grouped[category]):
-                    story.append(Paragraph(f"‣ Supplier {supplier}", headingSupp))  # ← uses headingSupp
-                    story.append(Spacer(1, 4))
+                data = [["Item Name", "Restock Qty", "Current", "Update Date", "Updated By"]]
 
-                    data = [["Item Name", "Current", "Reorder", "Max",
-                             "Restock Qty", "Updated By"]]
+                for r in grouped[supplier]:
+                    restock = r['max_stock_level'] - r['in_stock_level']
+                    u = r['unit']
+                    # Format the update date
+                    update_date = r['last_updated'][:16] if r['last_updated'] else 'N/A'
+                    data.append([
+                        r['name'],
+                        with_unit(restock, u),
+                        with_unit(r['in_stock_level'], u),
+                        update_date,
+                        r['updated_by'] or 'System'
+                    ])
 
-                    for r in grouped[category][supplier]:
-                        restock = r['max_stock_level'] - r['in_stock_level']
-                        u = r['unit']
-                        data.append([
-                            r['name'],
-                            with_unit(r['in_stock_level'], u),
-                            with_unit(r['reorder_level'], u),
-                            with_unit(r['max_stock_level'], u),
-                            with_unit(restock, u),
-                            r['updated_by'] or 'System'
-                        ])
+                tbl = Table(data,
+                            colWidths=[180, 80, 60, 100, 80])
 
-                    tbl = Table(data,
-                                colWidths=[180, 55, 55, 55, 65, 90])
-
-                    tbl.setStyle(TableStyle([
-                        ('FONT', (0, 0), (-1, 0), 'Helvetica-Bold', 10),
-                        ('FONT', (0, 1), (-1, -1), 'Helvetica', 10),
-                        ('BACKGROUND', (0, 0), (-1, 0), HEADER_BG),
-                        ('TEXTCOLOR', (0, 0), (-1, 0), HEADER_FG),
-                        ('ROWBACKGROUNDS', (0, 1), (-1, -1),
-                         (ROW_EVEN_BG, ROW_ODD_BG)),
-                        ('BACKGROUND', (4, 1), (4, -1), RESTOCK_BG),
-                        ('FONT', (4, 1), (4, -1), 'Helvetica-Bold', 10),
-                        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-                        ('GRID', (0, 0), (-1, -1), 0.25, GRID_CLR),
-                    ]))
-                    story.extend([tbl, Spacer(1, 10)])
+                tbl.setStyle(TableStyle([
+                    ('FONT', (0, 0), (-1, 0), 'Helvetica-Bold', 10),
+                    ('FONT', (0, 1), (-1, -1), 'Helvetica', 10),
+                    ('BACKGROUND', (0, 0), (-1, 0), HEADER_BG),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), HEADER_FG),
+                    ('ROWBACKGROUNDS', (0, 1), (-1, -1),
+                     (ROW_EVEN_BG, ROW_ODD_BG)),
+                    ('BACKGROUND', (1, 1), (1, -1), RESTOCK_BG),
+                    ('FONT', (1, 1), (1, -1), 'Helvetica-Bold', 10),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                    ('GRID', (0, 0), (-1, -1), 0.25, GRID_CLR),
+                ]))
+                story.extend([tbl, Spacer(1, 10)])
 
         doc.build(story)
         buffer.seek(0)
@@ -1437,113 +1458,128 @@ def download_stock_report():
                          download_name=fname, mimetype='application/pdf')
 
 
+
+
+
 # ---------------------------------------------------------------
-#  Category-specific UPDATE report (Owner/Manager table shortcut)
+#  Comprehensive UPDATE report (All categories from one session)
 # ---------------------------------------------------------------
-@app.route('/download_category_update_report')
-def download_category_update_report():
+@app.route('/download_comprehensive_update_report')
+def download_comprehensive_update_report():
     if 'authorized' not in session:
         return jsonify({'message': 'Unauthorized'}), 401
 
-    rec_id   = int(request.args.get('record',0))
-    snap     = batch_second(rec_id)
+    rec_id = int(request.args.get('record', 0))
+    snap = batch_second(rec_id)
     if not snap:
-        return jsonify({'message':'Invalid record id'}),404
+        return jsonify({'message': 'Invalid record id'}), 404
 
-    ts_sec   = snap['ts_sec']
-    category = snap['cat']
-    store    = snap['store']
-    employee = request.args.get('employee','System')
+    ts_sec = snap['ts_sec']
+    store = snap['store']
+    employee = request.args.get('employee', 'System')
 
     # non-owner can only touch own store
-    if session['role']!='owner' and store!=session['store_address']:
-        return jsonify({'message':'Unauthorized store'}),403
+    if session['role'] != 'owner' and store != session['store_address']:
+        return jsonify({'message': 'Unauthorized store'}), 403
 
     short = store.split(',')[0].strip()
 
-    # pull the snapshot (stock_after) for THIS SECOND only
+    # Get the specific category for this record
+    category = request.args.get('category', '')
+    
     with get_db_connection() as c:
         cur = c.cursor()
+        
+        # Get all items updated in this session for the specific category
         cur.execute('''
             SELECT i.name,
-                   su.stock_after                     AS current,
+                   i.category,
+                   su.stock_after AS current,
                    i.reorder_level,
                    i.max_stock_level,
                    i.unit,
-                   s.name                             AS supplier_name
-              FROM stock_updates su
-              JOIN items      i ON su.item_id=i.id
-         LEFT JOIN suppliers   s ON i.supplier_id=s.id
-             WHERE i.category      = ?
-               AND su.store_address= ?
-               AND strftime('%Y-%m-%d %H:%M:%S', su.updated_at)=?
-             ORDER BY s.name, i.name
-        ''', (category, store, ts_sec))
+                   s.name AS supplier_name
+            FROM stock_updates su
+            JOIN items i ON su.item_id = i.id
+            LEFT JOIN suppliers s ON i.supplier_id = s.id
+            WHERE su.store_address = ?
+            AND strftime('%Y-%m-%d %H:%M:%S', su.updated_at) = ?
+            AND i.category = ?
+            ORDER BY s.name, i.name
+        ''', (store, ts_sec, category))
         rows = cur.fetchall()
 
     # ---------- PDF ----------
     buffer = io.BytesIO()
-    doc     = SimpleDocTemplate(buffer, pagesize=letter,
-                                leftMargin=36, rightMargin=36,
-                                topMargin=48, bottomMargin=36)
+    doc = SimpleDocTemplate(buffer, pagesize=letter,
+                           leftMargin=36, rightMargin=36,
+                           topMargin=48, bottomMargin=36)
 
-    styles  = getSampleStyleSheet()
-    title = styles['Title'];  # keep store-category title
+    styles = getSampleStyleSheet()
+    title = styles['Title']
     title.fontSize = 14
     title.leading = 16
 
     from reportlab.lib.styles import ParagraphStyle
     subtitle = ParagraphStyle(
-        'Updater',  # NEW – centred green subtitle
+        'Updater',
         parent=styles['Heading3'],
-        alignment=1,  # 0-left 1-centre 2-right
+        alignment=1,
         fontSize=12,
         leading=14,
-        textColor=HexColor("#198754")  # choose any colour you like
+        textColor=HexColor("#198754")
     )
 
-    heading = styles['Heading3']  # unchanged – table heading size
+    category_heading = ParagraphStyle(
+        'CategoryHead',
+        parent=styles['Heading2'],
+        fontSize=12,
+        leading=14,
+        textColor=HexColor("#0d6efd")
+    )
 
     story = [Paragraph(f"{short} – {category} Update Report", title),
              Spacer(1, 4),
-             Paragraph(f"Updated by {employee}", subtitle),
-             Spacer(1, 12)]  # keeps the table title gap
+             Paragraph(f"Updated by {employee} at {ts_sec}", subtitle),
+             Spacer(1, 12)]
 
     if not rows:
-        story.append(Paragraph("No items found in this category.", styles['Normal']))
+        story.append(Paragraph("No items found in this update session.", styles['Normal']))
     else:
         data = [["Item", "Current", "Reorder", "Max", "Restock", "Supplier"]]
-        def u(n, unit): return f"{n} {unit}" if unit else n
+        def u(n, unit): return f"{n} {unit}" if unit else str(n)
 
         for r in rows:
             restock = r['max_stock_level'] - r['current']
-            data.append([ r['name'],
-                          u(r['current'], r['unit']),
-                          u(r['reorder_level' ], r['unit']),
-                          u(r['max_stock_level'], r['unit']),
-                          u(restock,            r['unit']),
-                          r['supplier_name'] or 'N/A' ])
+            data.append([
+                r['name'],
+                u(r['current'], r['unit']),
+                u(r['reorder_level'], r['unit']),
+                u(r['max_stock_level'], r['unit']),
+                u(restock, r['unit']),
+                r['supplier_name'] or 'N/A'
+            ])
 
         from reportlab.platypus import Table, TableStyle
-        from reportlab.lib import colors, colors as c
+        from reportlab.lib import colors
         GRID = HexColor("#B0BEC5")
-        tbl  = Table(data, colWidths=[160,55,55,55,60,100])
+        tbl = Table(data, colWidths=[160, 55, 55, 55, 60, 100])
         tbl.setStyle(TableStyle([
-            ('FONT', (0,0), (-1,0), 'Helvetica-Bold', 10),
-            ('BACKGROUND',(0,0),(-1,0), HexColor("#003366")),
-            ('TEXTCOLOR', (0,0),(-1,0), colors.whitesmoke),
-            ('ROWBACKGROUNDS',(0,1),(-1,-1),
-                (HexColor("#F4F7FA"), colors.white)),
-            ('GRID',(0,0),(-1,-1), .25, GRID),
-            ('ALIGN',(0,0),(-1,-1),'CENTER'),
-            ('VALIGN',(0,0),(-1,-1),'MIDDLE')
+            ('FONT', (0, 0), (-1, 0), 'Helvetica-Bold', 10),
+            ('BACKGROUND', (0, 0), (-1, 0), HexColor("#003366")),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1),
+             (HexColor("#F4F7FA"), colors.white)),
+            ('GRID', (0, 0), (-1, -1), .25, GRID),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE')
         ]))
-        story.append(tbl)
+        story.extend([tbl, Spacer(1, 12)])
 
     doc.build(story)
     buffer.seek(0)
     from datetime import date
-    fname = f"{short.replace(' ','_')}_{category.replace(' ','_')}_{date.today()}.pdf"
+    fname = f"{short.replace(' ', '_')}_{category.replace(' ', '_')}_Update_{date.today()}.pdf"
     return send_file(buffer, as_attachment=True,
                      download_name=fname,
                      mimetype='application/pdf')
@@ -1791,37 +1827,41 @@ def stock_update_history():
         # Process data with proper structure
         user_history = defaultdict(lambda: {
             'username': None,
-            'records' : [],
-            '_seen'   : set()          # internal helper – will strip later
+            'records' : []
         })
 
         for row in raw_history:
             u            = row['username']
-            cat          = row['category'] or 'Uncategorised'
             store_addr   = row['store_address']
+            category     = row['category']
             ts_min      = row['updated_at'][:16]          # keep up to min
-            composite_id = (cat, store_addr, ts_min)
+            composite_id = (store_addr, ts_min, category)  # Group by store, timestamp, and category
 
             usr = user_history[u]
             if usr['username'] is None:
                 usr['username'] = u
 
-            # skip duplicates arriving in the same batch
-            if composite_id in usr['_seen']:
-                continue
-            usr['_seen'].add(composite_id)
+            # Check if we already have a record for this category update session
+            existing_record = None
+            for record in usr['records']:
+                if (record['store_address'] == store_addr and 
+                    record['updated_at'][:16] == ts_min and
+                    record['category'] == category):
+                    existing_record = record
+                    break
 
-            usr['records'].append({
-                'id'           : row['id'],        # one representative id
-                'category'     : cat,
-                'updated_at'   : row['updated_at'],
-                'store_address': store_addr
-            })
+            if existing_record is None:
+                # Create new record for this category update session
+                usr['records'].append({
+                    'id'           : row['id'],        # one representative id
+                    'updated_at'   : row['updated_at'],
+                    'store_address': store_addr,
+                    'category'     : category,         # Single category per record
+                    'categories'   : [category]        # Keep for compatibility with frontend
+                })
 
-        # drop the helper set before shipping to the client
+        # Sort records newest-first and limit to 100 per user
         for usr in user_history.values():
-            usr.pop('_seen', None)
-            # NEW – sort newest-first and slice to 100
             usr['records'].sort(key=lambda r: r['updated_at'], reverse=True)
             usr['records'] = usr['records'][:100]
 

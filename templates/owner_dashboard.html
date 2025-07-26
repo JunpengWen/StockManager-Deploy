@@ -455,56 +455,7 @@
             </table>
         </div>
 
-        <!-- Add Item Form -->
-        <div id="addItemForm" class="card p-3 mb-3 d-none">
-            <h3>Add New Item</h3>
-            <form id="addItemFormContent">
-                <div class="row g-3">
-                    <div class="col-md-6">
-                        <label class="form-label">Item Name</label>
-                        <input type="text" class="form-control" name="name" required>
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label">Store</label>
-                        <select class="form-select" name="store_address" required>
-                            <option value="all">All Stores</option>
-                            {% for store in valid_stores %}
-                            <option value="{{ store }}">{{ store.split(',')[0] }}</option>
-                            {% endfor %}
-                        </select>
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label">Max Stock</label>
-                        <input type="number" class="form-control" name="max_stock_level" required>
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label">Current Stock</label>
-                        <input type="number" class="form-control" name="in_stock_level" required>
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label">Reorder Level</label>
-                        <input type="number" class="form-control" name="reorder_level" required>
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label">Category</label>
-                        <select class="form-select" name="category" id="categorySelect" required></select>
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label">Supplier</label>
-                        <input type="text" class="form-control" name="supplier" required>
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label">Unit (optional)</label>
-                        <select class="form-select unit-select" id="cardUnit">
-                            <option value="">-- Select Unit --</option>
-                        </select>
-                    </div>
-                    <div class="col-12">
-                        <button type="submit" class="btn btn-success w-100">Save Item</button>
-                    </div>
-                </div>
-            </form>
-        </div>
+
 
 
         <!-- Stock History -->
@@ -770,46 +721,7 @@
 
 
 
-    <div class="modal fade" id="historyModal" tabindex="-1" aria-labelledby="historyModalLabel" aria-hidden="true">
-        <div class="modal-dialog modal-xl">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title" id="historyModalLabel">Stock Update History</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                </div>
-                <div class="modal-body">
-                    <div class="row mb-3">
-                        <div class="col-md-6">
-                            <select class="form-select" id="historyStoreFilter">
-                                <option value="all">All Stores</option>
-                                {% for store in valid_stores %}
-                                <option value="{{ store }}">{{ store.split(',')[0] }}</option>
-                                {% endfor %}
-                            </select>
-                        </div>
-                    </div>
-                    <div class="table-responsive">
-                        <table class="table table-striped">
-                            <thead>
-                                <tr>
-                                    <th>Date</th>
-                                    <th>Item</th>
-                                    <th>User</th>
-                                    <th>Store</th>
-                                    <th>Before</th>
-                                    <th>After</th>
-                                    <th>Difference</th>
-                                </tr>
-                            </thead>
-                            <tbody id="historyModalBody">
-                                <!-- Dynamic content -->
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
+
 
     <!--  exit section -->
     <div class="mt-3 text-center">
@@ -843,7 +755,7 @@
             dropdown.hide();
         }
 
-        let currentEditStore = '';
+
 
         // 在现有的脚本代码中添加以下函数
         async function showAddItemForm() {
@@ -898,6 +810,15 @@
             }
 
             try {
+                // Show loading state for "all stores" operations
+                const isAllStores = itemData.store_address === 'all';
+                if (isAllStores) {
+                    const submitBtn = addItemModal.querySelector('button[type="submit"]');
+                    const originalText = submitBtn.innerHTML;
+                    submitBtn.innerHTML = '<i class="bi bi-hourglass-split"></i> Adding to all stores...';
+                    submitBtn.disabled = true;
+                }
+                
                 const response = await fetch('/owner_dashboard', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
@@ -911,15 +832,28 @@
                     return;
                 }
 
-                // Success handling
-                showSuccessAlert('Item added successfully!');
+                // Success handling - use the detailed message from backend
+                showSuccessAlert(result.message || 'Item added successfully!');
                 bootstrap.Modal.getInstance(addItemModal).hide();
                 event.target.reset();
                 initializeStores();
                 loadStoreItems();
+                
+                // Restore button state if it was changed
+                if (isAllStores) {
+                    const submitBtn = addItemModal.querySelector('button[type="submit"]');
+                    submitBtn.innerHTML = 'Add Item';
+                    submitBtn.disabled = false;
+                }
 
             } catch (error) {
                 handleNetworkError(error);
+                // Restore button state on error
+                if (isAllStores) {
+                    const submitBtn = addItemModal.querySelector('button[type="submit"]');
+                    submitBtn.innerHTML = 'Add Item';
+                    submitBtn.disabled = false;
+                }
             }
 
             function showFieldError(fieldId, message) {
@@ -938,12 +872,24 @@
                 } else {
                     showGenericError(message || 'Failed to add item');
                 }
+                // Restore button state on error
+                if (isAllStores) {
+                    const submitBtn = addItemModal.querySelector('button[type="submit"]');
+                    submitBtn.innerHTML = 'Add Item';
+                    submitBtn.disabled = false;
+                }
             }
 
             function handleNetworkError(error) {
                 console.error('Add item error:', error);
                 showGenericError('Network error - please check your connection');
                 keepModalOpen();
+                // Restore button state on error
+                if (isAllStores) {
+                    const submitBtn = addItemModal.querySelector('button[type="submit"]');
+                    submitBtn.innerHTML = 'Add Item';
+                    submitBtn.disabled = false;
+                }
             }
 
             function showGenericError(message) {
@@ -1639,42 +1585,14 @@
             }
         }
 
-        async function showStockHistory(storeAddress) {
-            currentEditStore = storeAddress;
-            document.getElementById('historyStoreFilter').value = storeAddress;
-            await loadHistory();
-            new bootstrap.Modal(document.getElementById('historyModal')).show();
-        }
 
-        async function loadHistory() {
-            const storeFilter = document.getElementById('historyStoreFilter').value;
-            const response = await fetch(`/stock_update_history?store=${encodeURIComponent(storeFilter)}`);
-            const history = await response.json();
-
-            const tbody = document.getElementById('historyModalBody');
-            tbody.innerHTML = history.flatMap(user =>
-                user.records.map(record => `
-                    <tr>
-                        <td>${new Date(record.updated_at).toLocaleString()}</td>
-                        <td>${record.item_name}</td>
-                        <td>${user.username}</td>
-                        <td>${record.store}</td>
-                        <td>${record.stock_before}</td>
-                        <td>${record.stock_after}</td>
-                        <td class="${record.stock_after > record.stock_before ? 'text-success' : 'text-danger'}">
-                            ${record.stock_after - record.stock_before}
-                        </td>
-                    </tr>
-                `)
-            ).join('');
-        }
 
         // Event listeners
         document.getElementById('editResetPassword').addEventListener('change', function() {
             document.querySelector('.password-field').classList.toggle('d-none', !this.checked);
         });
 
-        document.getElementById('historyStoreFilter').addEventListener('change', loadHistory);
+
 
         // Initialize categories in add item form
         async function initializeCategories() {
@@ -1723,26 +1641,7 @@
             }
         }
 
-        async function fetchStoreStats(storeAddress) {
-            try {
-                // Use storeAddress directly instead of reference from dataset
-                const response = await fetch(`/items?store=${encodeURIComponent(storeAddress)}`);
-                const items = await response.json();
 
-                const historyResponse = await fetch(`/stock_update_history?store=${encodeURIComponent(storeAddress)}`);
-                const updates = await historyResponse.json();
-
-                return {
-                    totalItems: items.length,
-                    lowStockItems: items.filter(item => item.in_stock_level <= item.reorder_level).length,
-                    recentUpdates: updates.flatMap(user => user.records).length
-                };
-
-            } catch (error) {
-                console.error('Error fetching store stats:', error);
-                return null;
-            }
-        }
 
         // Stock Warnings
         async function fetchStockWarnings() {
@@ -2494,15 +2393,15 @@
                                         ${userHistory.records.map(r=>`
                                           <tr>
                                             <td>${new Date(r.updated_at).toLocaleString()}</td>
-                                            <td>${r.category}</td>
+                                            <td>${r.category || 'N/A'}</td>
                                             <td>${r.store_address.split(',')[0]}</td>
                                             <td>
                                                 <button class="btn btn-sm btn-primary"
-                                                        onclick="downloadCategoryUpdate('${r.category}',
-                                                                                          '${r.store_address}',
-                                                                                          '${userHistory.username}',
-                                                                                          ${r.id})">
-                                                    <i class="bi bi-file-earmark-pdf"></i>
+                                                        onclick="downloadComprehensiveUpdate('${r.store_address}',
+                                                                                              '${userHistory.username}',
+                                                                                              ${r.id},
+                                                                                              '${r.category || ''}')">
+                                                    <i class="bi bi-file-earmark-pdf"></i> ${r.category || 'Category'}
                                                 </button>
                                                 <button class="btn btn-sm btn-outline-danger ms-1"
                                                         onclick="deleteSingleRecord(${r.id})">
@@ -2589,25 +2488,28 @@
         document.addEventListener('DOMContentLoaded', () => {
             loadOwnerHistory();
         });
-        async function downloadCategoryUpdate(category, store, employee,recordId){
+        async function downloadComprehensiveUpdate(store, employee, recordId, category){
             try{
-                const url = `/download_category_update_report`
+                const url = `/download_comprehensive_update_report`
                           + `?record=${recordId}`
-                          + `&category=${encodeURIComponent(category)}`
                           + `&store=${encodeURIComponent(store)}`
-                          + `&employee=${encodeURIComponent(employee)}`;
+                          + `&employee=${encodeURIComponent(employee)}`
+                          + `&category=${encodeURIComponent(category)}`;
                 const r   = await fetch(url);
                 if(!r.ok) throw new Error('Report generation failed');
                 const blob = await r.blob();
                 const a    = document.createElement('a');
                 a.href      = URL.createObjectURL(blob);
                 const sn    = store.split(',')[0].replace(/\s+/g,'_');
-                a.download  = `Update_${sn}_${category.replace(/\s+/g,'_')}.pdf`;
+                const cat   = category.replace(/\s+/g,'_');
+                a.download  = `${cat}_Update_${sn}.pdf`;
                 document.body.appendChild(a);
                 a.click();
                 a.remove();
             }catch(e){ alert(e.message); }
         }
+
+
 
         /* ----------------------------------------------------
            UNIT helpers – mirrors Category/Supplier logic
