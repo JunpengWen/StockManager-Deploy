@@ -1,5 +1,7 @@
 import io
 from collections import defaultdict
+from datetime import datetime, timezone
+import pytz
 
 from flask import Flask, render_template, request, redirect, url_for, jsonify, session, flash
 import sqlite3
@@ -40,6 +42,39 @@ scheduler = BackgroundScheduler(daemon=True)
 # Ensure the upload folder exists
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
+
+# Timezone configuration
+# Set the timezone for the application (Los Angeles timezone)
+# This ensures all timestamps are consistent regardless of where the code is developed
+# or where the server is deployed. The database stores UTC timestamps, but all
+# display and business logic uses Los Angeles timezone.
+APP_TIMEZONE = pytz.timezone('America/Los_Angeles')
+
+def get_current_time():
+    """Get current time in the application timezone"""
+    return datetime.now(APP_TIMEZONE)
+
+def get_current_time_str():
+    """Get current time as string in the application timezone"""
+    return get_current_time().strftime("%Y-%m-%d %H:%M:%S")
+
+def convert_to_app_timezone(dt):
+    """Convert a datetime to application timezone"""
+    if dt.tzinfo is None:
+        # If naive datetime, assume it's in UTC
+        dt = pytz.utc.localize(dt)
+    return dt.astimezone(APP_TIMEZONE)
+
+def format_datetime_for_display(dt_str):
+    """Format datetime string for display in application timezone"""
+    try:
+        # Parse the datetime string (assuming it's stored in app timezone)
+        dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
+        # Localize to app timezone
+        dt = APP_TIMEZONE.localize(dt)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except:
+        return dt_str
 
 
 # Helper function to validate file extensions
@@ -109,7 +144,7 @@ def init_db():
             item_id INTEGER NOT NULL,
             stock_before INTEGER NOT NULL,
             stock_after INTEGER NOT NULL,
-            updated_at TIMESTAMP DEFAULT (datetime('now', 'localtime')),
+            updated_at TIMESTAMP DEFAULT (datetime('now')),
             store_address TEXT NOT NULL,  -- Track store context
             FOREIGN KEY (user_id) REFERENCES users(id),
             FOREIGN KEY (item_id) REFERENCES items(id)
@@ -1232,8 +1267,8 @@ def delete_stock_update(record_id):
                 DELETE FROM stock_updates
                  WHERE strftime('%Y-%m-%d %H:%M', updated_at)=?
                    AND store_address = ?
-                   AND item_id IN (SELECT id FROM items WHERE category=?)
-            ''', (ts_min, record['store_address'], cat))
+                   AND item_id IN (SELECT id FROM items WHERE category=? AND store_address=?)
+            ''', (ts_min, record['store_address'], cat, record['store_address']))
 
             deleted_count = cursor.rowcount
             conn.commit()
@@ -1335,22 +1370,27 @@ def download_stock_report():
                 i.unit,
                 s.name AS supplier_name,
                 COALESCE(u.employee_name, 'System') AS updated_by,
-                su.updated_at AS last_updated
+                CASE 
+                    WHEN su.updated_at IS NOT NULL THEN su.updated_at
+                    ELSE 'Never Updated'
+                END AS last_updated
             FROM items i
             LEFT JOIN suppliers s ON i.supplier_id = s.id
             LEFT JOIN (
                 SELECT item_id, MAX(updated_at) AS latest
                 FROM stock_updates
+                WHERE store_address = ?
                 GROUP BY item_id
             ) latest ON i.id = latest.item_id
             LEFT JOIN stock_updates su 
                    ON su.item_id = latest.item_id
                   AND su.updated_at = latest.latest
+                  AND su.store_address = ?
             LEFT JOIN users u ON su.user_id = u.id
             WHERE i.in_stock_level <= i.reorder_level
             AND i.store_address = ?
             ORDER BY s.name, i.name
-        ''', (store_filter,))
+        ''', (store_filter, store_filter, store_filter))
         rows = cursor.fetchall()
 
         from collections import defaultdict
@@ -1387,12 +1427,11 @@ def download_stock_report():
                                   leading=12,
                                   textColor=HexColor("#666666"))
 
-        # Get current date and time
-        from datetime import datetime
-        current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # Get current date and time in application timezone
+        current_datetime = get_current_time_str()
 
         story = [Paragraph(f"{short_name} – Stock Warnings Report", title),
-                 Paragraph(f"Generated on: {current_datetime}", subtitle),
+                 Paragraph(f"Generated on: {current_datetime} (Los Angeles Time)", subtitle),
                  Spacer(1, 12)]
 
         if not rows:
@@ -1415,7 +1454,10 @@ def download_stock_report():
                     restock = r['max_stock_level'] - r['in_stock_level']
                     u = r['unit']
                     # Format the update date
-                    update_date = r['last_updated'][:16] if r['last_updated'] else 'N/A'
+                    if r['last_updated'] and r['last_updated'] != 'Never Updated':
+                        update_date = r['last_updated'][:16]
+                    else:
+                        update_date = r['last_updated'] or 'N/A'
                     data.append([
                         r['name'],
                         with_unit(restock, u),
@@ -1451,7 +1493,189 @@ def download_stock_report():
                          download_name=fname, mimetype='application/pdf')
 
 
+# ---------------------------------------------------------------
+#  Store-specific date report (Items updated on a specific date)
+# ---------------------------------------------------------------
+@app.route('/download_store_date_report', methods=['GET'])
+def download_store_date_report():
+    """Generate store-specific date report showing items updated on a specific date."""
+    
+    # Authorization check
+    if 'authorized' not in session:
+        return jsonify({'message': 'Unauthorized'}), 401
 
+    current_role = session.get('role')
+    current_store = session.get('store_address')
+    store_filter = request.args.get('store', current_store)
+    report_date = request.args.get('date', '')
+
+    if current_role != 'owner':
+        store_filter = current_store
+
+    # Validate store access
+    if current_role != 'owner' and store_filter != current_store:
+        return jsonify({'message': 'Unauthorized to access this store'}), 403
+
+    if store_filter not in get_stores():
+        return jsonify({'message': 'Invalid store selection'}), 400
+
+    if not report_date:
+        return jsonify({'message': 'Date parameter is required'}), 400
+
+    short_name = store_filter.split(',')[0].strip()
+
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT 
+                i.name,
+                i.category,
+                i.in_stock_level,
+                i.max_stock_level,
+                i.reorder_level,
+                i.unit,
+                s.name AS supplier_name,
+                COALESCE(u.employee_name, 'System') AS updated_by,
+                su.updated_at AS last_updated,
+                CASE 
+                    WHEN i.in_stock_level <= i.reorder_level THEN (i.max_stock_level - i.in_stock_level)
+                    ELSE 0 
+                END AS reorder_quantity
+            FROM items i
+            LEFT JOIN suppliers s ON i.supplier_id = s.id
+            INNER JOIN (
+                SELECT DISTINCT item_id
+                FROM stock_updates
+                WHERE store_address = ?
+                AND DATE(updated_at) = ?
+            ) updated_items ON i.id = updated_items.item_id
+            LEFT JOIN (
+                SELECT item_id, MAX(updated_at) AS latest
+                FROM stock_updates
+                WHERE store_address = ?
+                AND DATE(updated_at) = ?
+                GROUP BY item_id
+            ) latest ON i.id = latest.item_id
+            LEFT JOIN stock_updates su 
+                   ON su.item_id = latest.item_id
+                  AND su.updated_at = latest.latest
+                  AND su.store_address = ?
+                  AND DATE(su.updated_at) = ?
+            LEFT JOIN users u ON su.user_id = u.id
+            WHERE i.store_address = ?
+            ORDER BY s.name, i.category, i.name
+        ''', (store_filter, report_date, store_filter, report_date, store_filter, report_date, store_filter))
+        rows = cursor.fetchall()
+
+        from collections import defaultdict
+        grouped = defaultdict(list)
+
+        def with_unit(n, unit):
+            """Format number with unit, handling None values"""
+            if n is None:
+                return 'N/A'
+            return f"{n} {unit}" if unit else str(n)
+
+        for r in rows:
+            supplier = r['supplier_name'] or 'Unknown supplier'
+            grouped[supplier].append(r)
+
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=letter,
+                                leftMargin=36, rightMargin=36,
+                                topMargin=48, bottomMargin=36)
+
+        styles = getSampleStyleSheet()
+        SUPPLIER_CLR = HexColor("#ff8800")  # warm orange
+        from reportlab.lib.styles import ParagraphStyle
+        
+        headingSupp = ParagraphStyle('SuppHead',
+                                     parent=styles['Heading3'],
+                                     textColor=SUPPLIER_CLR)
+
+        title = ParagraphStyle('RptTitle',
+                               parent=styles['Title'],
+                               fontSize=14,
+                               leading=16)
+        
+        subtitle = ParagraphStyle('SubTitle',
+                                  parent=styles['Normal'],
+                                  fontSize=10,
+                                  leading=12,
+                                  textColor=HexColor("#666666"))
+
+        # Get current date and time in application timezone
+        current_datetime = get_current_time_str()
+
+        # Calculate summary statistics
+        total_items = len(rows)
+        categories = set(r['category'] for r in rows if r['category'])
+        total_categories = len(categories)
+        
+        story = [Paragraph(f"{short_name} – Stock Update Report", title),
+                 Paragraph(f"Update Date: {report_date}", subtitle),
+                 Paragraph(f"Generated on: {current_datetime} (Los Angeles Time)", subtitle),
+                 Paragraph(f"Total Items Updated: {total_items} | Categories: {total_categories}", subtitle),
+                 Spacer(1, 12)]
+
+        if not rows:
+            story.append(Paragraph("No items were updated on this date.", styles['Normal']))
+        else:
+            # Add category breakdown
+            story.append(Paragraph("Categories Updated:", styles['Heading3']))
+            category_list = ", ".join(sorted(categories))
+            story.append(Paragraph(category_list, styles['Normal']))
+            story.append(Paragraph("Note: Reorder Qty shows how much to reorder when current stock ≤ reorder level", styles['Normal']))
+            story.append(Spacer(1, 12))
+            
+            HEADER_BG = HexColor("#003366")
+            HEADER_FG = colors.whitesmoke
+
+            for supplier, items in grouped.items():
+                story.append(Paragraph(supplier, headingSupp))
+                story.append(Spacer(1, 6))
+
+                data = [["Item", "Category", "Restock", "Current", "Max", "Updated By", "Last Updated"]]
+                
+                for item in items:
+                    data.append([
+                        item['name'],
+                        item['category'] or 'N/A',
+                        with_unit(item['reorder_quantity'], item['unit']),
+                        with_unit(item['in_stock_level'], item['unit']),
+                        with_unit(item['max_stock_level'], item['unit']),
+                        item['updated_by'],
+                        item['last_updated'] if item['last_updated'] else 'N/A'
+                    ])
+
+                tbl = Table(data, colWidths=[110, 140, 40, 40, 40, 60, 80])
+                tbl.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), HEADER_BG),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), HEADER_FG),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 10),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                    ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                    ('FONTSIZE', (0, 1), (-1, -1), 8),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                    # Highlight reorder quantity column (column 2)
+                    ('BACKGROUND', (2, 1), (2, -1), HexColor("#FFF4CC")),
+                    ('FONT', (2, 1), (2, -1), 'Helvetica-Bold', 10),
+                    ('TEXTCOLOR', (2, 1), (2, -1), HexColor("#DC3545")),
+                ]))
+
+                story.append(tbl)
+                story.append(Spacer(1, 12))
+
+        doc.build(story)
+        buffer.seek(0)
+        
+        fname = f"Store_Date_Report_{short_name.replace(' ', '_')}_{report_date}.pdf"
+        return send_file(buffer, as_attachment=True,
+                         download_name=fname, mimetype='application/pdf')
 
 
 # ---------------------------------------------------------------
@@ -1797,6 +2021,7 @@ def stock_update_history():
             FROM stock_updates su
             JOIN users u ON su.user_id = u.id
             JOIN items i ON su.item_id = i.id
+            WHERE i.category IS NOT NULL AND i.category != ''
         '''
         params = []
         filters = []
@@ -1931,6 +2156,147 @@ def delete_supplier(supplier_id):
         except sqlite3.Error as e:
             return jsonify({'error': str(e)}), 500
 
+@app.route('/debug/categories')
+def debug_categories():
+    """Debug endpoint to check categories in the database"""
+    if 'authorized' not in session:
+        return jsonify({'message': 'Unauthorized'}), 401
+    
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        
+        # Get all categories from items
+        cursor.execute('''
+            SELECT DISTINCT category, COUNT(*) as item_count
+            FROM items 
+            WHERE category IS NOT NULL AND category != ''
+            GROUP BY category
+            ORDER BY category
+        ''')
+        categories = [dict(row) for row in cursor.fetchall()]
+        
+        # Get categories from stock updates
+        cursor.execute('''
+            SELECT DISTINCT i.category, COUNT(*) as update_count
+            FROM stock_updates su
+            JOIN items i ON su.item_id = i.id
+            WHERE i.category IS NOT NULL AND i.category != ''
+            GROUP BY i.category
+            ORDER BY i.category
+        ''')
+        updated_categories = [dict(row) for row in cursor.fetchall()]
+        
+        return jsonify({
+            'all_categories': categories,
+            'updated_categories': updated_categories
+        })
+
+@app.route('/debug/stock_history')
+def debug_stock_history():
+    """Debug endpoint to check stock update history data"""
+    if 'authorized' not in session:
+        return jsonify({'message': 'Unauthorized'}), 401
+    
+    store_filter = request.args.get('store', 'all')
+    current_role = session.get('role')
+
+    base_query = '''
+        SELECT 
+            su.id, 
+            su.store_address,
+            u.username, 
+            i.name AS item_name, 
+            i.category AS category,
+            su.stock_before, 
+            su.stock_after, 
+            su.updated_at,
+            i.max_stock_level,
+            i.unit
+        FROM stock_updates su
+        JOIN users u ON su.user_id = u.id
+        JOIN items i ON su.item_id = i.id
+        WHERE i.category IS NOT NULL AND i.category != ''
+    '''
+    params = []
+    filters = []
+
+    if current_role != 'owner':
+        filters.append('su.store_address = ?')
+        params.append(session.get('store_address'))
+    elif store_filter.lower() != 'all':
+        if store_filter not in get_stores():
+            return jsonify({'message': 'Invalid store filter'}), 400
+        filters.append('su.store_address = ?')
+        params.append(store_filter)
+
+    if filters:
+        base_query += ' AND ' + ' AND '.join(filters)
+
+    base_query += ' ORDER BY su.updated_at DESC'
+
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(base_query, params)
+        raw_history = cursor.fetchall()
+
+    # Process data with proper structure
+    user_history = defaultdict(lambda: {
+        'username': None,
+        'records' : []
+    })
+
+    for row in raw_history:
+        u            = row['username']
+        store_addr   = row['store_address']
+        category     = row['category']
+        ts_min      = row['updated_at'][:16]          # keep up to min
+        composite_id = (store_addr, ts_min, category)  # Group by store, timestamp, and category
+
+        usr = user_history[u]
+        if usr['username'] is None:
+            usr['username'] = u
+
+        # Check if we already have a record for this category update session
+        existing_record = None
+        for record in usr['records']:
+            if (record['store_address'] == store_addr and 
+                record['updated_at'][:16] == ts_min and
+                record['category'] == category):
+                existing_record = record
+                break
+
+        if existing_record is None:
+            # Calculate restock amount
+            restock = row['max_stock_level'] - row['stock_after'] if row['max_stock_level'] and row['stock_after'] else 0
+            
+            # Create new record for this category update session
+            usr['records'].append({
+                'id'           : row['id'],        # one representative id
+                'updated_at'   : row['updated_at'],
+                'store_address': store_addr,
+                'category'     : category,         # Single category per record
+                'categories'   : [category],       # Keep for compatibility with frontend
+                'item_name'    : row['item_name'],
+                'max_stock_level': row['max_stock_level'],
+                'unit'         : row['unit'],
+                'restock'      : restock
+            })
+
+    # Sort records newest-first and limit to 100 per user
+    for usr in user_history.values():
+        usr['records'].sort(key=lambda r: r['updated_at'], reverse=True)
+        usr['records'] = usr['records'][:100]
+
+    debug_info = {
+        'total_raw_records': len(raw_history),
+        'categories_found': list(set(row['category'] for row in raw_history if row['category'])),
+        'total_users': len(user_history),
+        'total_records_after_grouping': sum(len(usr['records']) for usr in user_history.values()),
+        'user_history': list(user_history.values())
+    }
+    
+    return jsonify(debug_info)
+
 @app.route('/logout')
 def logout():
     session.clear()  # Clear all session data
@@ -1949,7 +2315,7 @@ def cleanup_stock_history():
             # Delete records older than 30 days using SQLite's time
             cursor.execute('''
                 DELETE FROM stock_updates
-                WHERE updated_at < datetime('now', '-30 days', 'localtime')
+                WHERE updated_at < datetime('now', '-30 days')
             ''')
 
             # B. NEW – size based cleanup (100-row cap per user)
