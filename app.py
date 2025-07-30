@@ -1211,42 +1211,35 @@ def delete_stock_update(record_id):
             if not record:
                 return jsonify({'message': 'Record not found'}), 404
 
-            # Determine the batch-second, category and store
+            # Determine the batch-minute, category and store
             cursor.execute('''
-                 SELECT strftime('%Y-%m-%d %H:%M:%S', su.updated_at) AS ts_sec,
-                        i.category                                   AS cat
+                 SELECT strftime('%Y-%m-%d %H:%M', su.updated_at) AS ts_min,
+                        i.category                                 AS cat
                    FROM stock_updates su
                    JOIN items i ON su.item_id = i.id
                   WHERE su.id = ?
             ''', (record_id,))
             snap = cursor.fetchone()
-            ts_sec = snap['ts_sec'];
+            ts_min = snap['ts_min'];
             cat = snap['cat']
-
-            # delete *all* rows of that batch
-            cursor.execute('''
-                DELETE FROM stock_updates
-                 WHERE strftime('%Y-%m-%d %H:%M:%S', updated_at)=?
-                   AND store_address = ?
-                   AND item_id IN (SELECT id FROM items WHERE category=?)
-            ''', (ts_sec, record['store_address'], cat))
-
-            if not record:
-                return jsonify({'message': 'Record not found'}), 404
 
             # 2. Validate store access for non-owners
             if current_role != 'owner' and record['store_address'] != current_store:
                 return jsonify({'message': 'Unauthorized to modify records from other stores'}), 403
 
-            # 3. Delete the record with store validation
-            delete_query = '''DELETE FROM stock_updates WHERE id = ?'''
-            delete_params = (record_id,)
+            # 3. Delete all rows of that batch (minute-level precision)
+            cursor.execute('''
+                DELETE FROM stock_updates
+                 WHERE strftime('%Y-%m-%d %H:%M', updated_at)=?
+                   AND store_address = ?
+                   AND item_id IN (SELECT id FROM items WHERE category=?)
+            ''', (ts_min, record['store_address'], cat))
 
-            cursor.execute(delete_query, delete_params)
+            deleted_count = cursor.rowcount
             conn.commit()
 
             return jsonify({
-                'message': 'Stock update deleted successfully',
+                'message': f'Stock update batch deleted successfully ({deleted_count} records)',
                 'deleted_store': record['store_address']
             }), 200
 
@@ -1470,11 +1463,11 @@ def download_comprehensive_update_report():
         return jsonify({'message': 'Unauthorized'}), 401
 
     rec_id = int(request.args.get('record', 0))
-    snap = batch_second(rec_id)
+    snap = batch_minute(rec_id)
     if not snap:
         return jsonify({'message': 'Invalid record id'}), 404
 
-    ts_sec = snap['ts_sec']
+    ts_min = snap['ts_min']
     store = snap['store']
     employee = request.args.get('employee', 'System')
 
@@ -1503,10 +1496,10 @@ def download_comprehensive_update_report():
             JOIN items i ON su.item_id = i.id
             LEFT JOIN suppliers s ON i.supplier_id = s.id
             WHERE su.store_address = ?
-            AND strftime('%Y-%m-%d %H:%M:%S', su.updated_at) = ?
+            AND strftime('%Y-%m-%d %H:%M', su.updated_at) = ?
             AND i.category = ?
             ORDER BY s.name, i.name
-        ''', (store, ts_sec, category))
+        ''', (store, ts_min, category))
         rows = cur.fetchall()
 
     # ---------- PDF ----------
@@ -1540,30 +1533,30 @@ def download_comprehensive_update_report():
 
     story = [Paragraph(f"{short} – {category} Update Report", title),
              Spacer(1, 4),
-             Paragraph(f"Updated by {employee} at {ts_sec}", subtitle),
+             Paragraph(f"Updated by {employee} at {ts_min}", subtitle),
              Spacer(1, 12)]
 
     if not rows:
         story.append(Paragraph("No items found in this update session.", styles['Normal']))
     else:
-        data = [["Item", "Current", "Reorder", "Max", "Restock", "Supplier"]]
+        data = [["Item", "Restock", "Current", "Reorder", "Max", "Supplier"]]
         def u(n, unit): return f"{n} {unit}" if unit else str(n)
 
         for r in rows:
             restock = r['max_stock_level'] - r['current']
             data.append([
                 r['name'],
+                u(restock, r['unit']),
                 u(r['current'], r['unit']),
                 u(r['reorder_level'], r['unit']),
                 u(r['max_stock_level'], r['unit']),
-                u(restock, r['unit']),
                 r['supplier_name'] or 'N/A'
             ])
 
         from reportlab.platypus import Table, TableStyle
         from reportlab.lib import colors
         GRID = HexColor("#B0BEC5")
-        tbl = Table(data, colWidths=[160, 55, 55, 55, 60, 100])
+        tbl = Table(data, colWidths=[160, 60, 55, 55, 55, 100])
         tbl.setStyle(TableStyle([
             ('FONT', (0, 0), (-1, 0), 'Helvetica-Bold', 10),
             ('BACKGROUND', (0, 0), (-1, 0), HexColor("#003366")),
@@ -1572,7 +1565,11 @@ def download_comprehensive_update_report():
              (HexColor("#F4F7FA"), colors.white)),
             ('GRID', (0, 0), (-1, -1), .25, GRID),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE')
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            # Highlight Restock column (column 1) with red background and bold text
+            ('BACKGROUND', (1, 1), (1, -1), HexColor("#FFE6E6")),
+            ('FONT', (1, 1), (1, -1), 'Helvetica-Bold', 10),
+            ('TEXTCOLOR', (1, 1), (1, -1), HexColor("#DC3545"))
         ]))
         story.extend([tbl, Spacer(1, 12)])
 
@@ -1794,7 +1791,9 @@ def stock_update_history():
                 i.category AS category,
                 su.stock_before, 
                 su.stock_after, 
-                su.updated_at
+                su.updated_at,
+                i.max_stock_level,
+                i.unit
             FROM stock_updates su
             JOIN users u ON su.user_id = u.id
             JOIN items i ON su.item_id = i.id
@@ -1851,13 +1850,20 @@ def stock_update_history():
                     break
 
             if existing_record is None:
+                # Calculate restock amount
+                restock = row['max_stock_level'] - row['stock_after'] if row['max_stock_level'] and row['stock_after'] else 0
+                
                 # Create new record for this category update session
                 usr['records'].append({
                     'id'           : row['id'],        # one representative id
                     'updated_at'   : row['updated_at'],
                     'store_address': store_addr,
                     'category'     : category,         # Single category per record
-                    'categories'   : [category]        # Keep for compatibility with frontend
+                    'categories'   : [category],       # Keep for compatibility with frontend
+                    'item_name'    : row['item_name'],
+                    'max_stock_level': row['max_stock_level'],
+                    'unit'         : row['unit'],
+                    'restock'      : restock
                 })
 
         # Sort records newest-first and limit to 100 per user
@@ -1875,12 +1881,12 @@ def stock_update_history():
         return jsonify({'message': 'Internal server error'}), 500
 
 
-def batch_second(record_id):
-    """Return (timestamp-to-sec, store, category) for any stock_updates.id"""
+def batch_minute(record_id):
+    """Return (timestamp-to-min, store, category) for any stock_updates.id"""
     with get_db_connection() as c:
         cur = c.cursor()
         cur.execute('''
-            SELECT strftime('%Y-%m-%d %H:%M:%S', su.updated_at)   AS ts_sec,
+            SELECT strftime('%Y-%m-%d %H:%M', su.updated_at)     AS ts_min,
                    i.category                                     AS cat,
                    su.store_address                              AS store
               FROM stock_updates su
