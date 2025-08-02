@@ -44,10 +44,6 @@ if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 
 # Timezone configuration
-# Set the timezone for the application (Los Angeles timezone)
-# This ensures all timestamps are consistent regardless of where the code is developed
-# or where the server is deployed. The database stores UTC timestamps, but all
-# display and business logic uses Los Angeles timezone.
 APP_TIMEZONE = pytz.timezone('America/Los_Angeles')
 
 def get_current_time():
@@ -76,6 +72,9 @@ def format_datetime_for_display(dt_str):
     except:
         return dt_str
 
+def get_db_timezone_str():
+    """Get current time in database format for SQLite"""
+    return get_current_time().strftime("%Y-%m-%d %H:%M:%S")
 
 # Helper function to validate file extensions
 def allowed_file(filename):
@@ -133,7 +132,7 @@ def init_db():
             employee_name TEXT,
             store_address TEXT NOT NULL,  -- Store assignment
             role TEXT NOT NULL CHECK(role IN ('owner', 'employee', 'manager', 'server', 'line_cook', 'prep_cook')),
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            created_at TIMESTAMP DEFAULT (datetime('now', 'localtime')),
             phone_number TEXT DEFAULT NULL,
             email TEXT DEFAULT NULL
         )''')
@@ -144,7 +143,7 @@ def init_db():
             item_id INTEGER NOT NULL,
             stock_before INTEGER NOT NULL,
             stock_after INTEGER NOT NULL,
-            updated_at TIMESTAMP DEFAULT (datetime('now')),
+            updated_at TIMESTAMP DEFAULT (datetime('now', 'localtime')),
             store_address TEXT NOT NULL,  -- Track store context
             FOREIGN KEY (user_id) REFERENCES users(id),
             FOREIGN KEY (item_id) REFERENCES items(id)
@@ -155,7 +154,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT UNIQUE NOT NULL,
             contact_info TEXT DEFAULT '',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT (datetime('now', 'localtime'))
         )
         ''')
 
@@ -302,8 +301,8 @@ def register():
                     INSERT INTO users (
                         username, password, employee_name,
                         phone_number, email, store_address, 
-                        role, is_authorized
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        role, is_authorized, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     data['username'],
                     data['password'],  # Use plain password directly
@@ -366,7 +365,7 @@ def pending_accounts():
 @app.route('/account/<int:account_id>', methods=['GET'])
 def get_account_detail(account_id):
     # 验证登录状态
-    if 'authorized' not in session:
+    if 'user_id' not in session or 'role' not in session:
         return jsonify({'message': 'Unauthorized'}), 401
 
     # 获取请求者权限
@@ -419,7 +418,7 @@ def get_account_detail(account_id):
 
 @app.route('/update_user_categories/<int:user_id>', methods=['POST'])
 def update_user_categories(user_id):
-    if 'authorized' not in session or session.get('role') != 'owner':
+    if 'user_id' not in session or session.get('role') != 'owner':
         return jsonify({'message': 'Unauthorized'}), 401
 
     data = request.json
@@ -820,6 +819,49 @@ def categories():
         cursor.execute('SELECT name FROM categories')
         return jsonify([row['name'] for row in cursor.fetchall()])
 
+@app.route('/categories/update', methods=['PUT'])
+def update_category():
+    if 'user_id' not in session or 'role' not in session:
+        return jsonify({'message': 'Unauthorized'}), 401
+    
+    data = request.json
+    old_name = data.get('oldName', '').strip()
+    new_name = data.get('newName', '').strip()
+    
+    if not old_name or not new_name:
+        return jsonify({'message': 'Both old and new category names are required'}), 400
+    
+    if old_name == new_name:
+        return jsonify({'message': 'New name is the same as old name'}), 400
+    
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            # Check if old category exists
+            cursor.execute('SELECT name FROM categories WHERE name = ?', (old_name,))
+            if not cursor.fetchone():
+                return jsonify({'message': 'Category not found'}), 404
+            
+            # Check if new name already exists
+            cursor.execute('SELECT name FROM categories WHERE name = ?', (new_name,))
+            if cursor.fetchone():
+                return jsonify({'message': 'Category name already exists'}), 400
+            
+            # Update the category name in categories table
+            cursor.execute('UPDATE categories SET name = ? WHERE name = ?', (new_name, old_name))
+            
+            # Update the category name in items table
+            cursor.execute('UPDATE items SET category = ? WHERE category = ?', (new_name, old_name))
+            
+            # Update the category name in user_categories table
+            cursor.execute('UPDATE user_categories SET category = ? WHERE category = ?', (new_name, old_name))
+            
+            conn.commit()
+            
+            return jsonify({'message': 'Category updated successfully', 'name': new_name}), 200
+        except sqlite3.Error as e:
+            return jsonify({'message': f'Database error: {str(e)}'}), 500
+
 @app.route('/stores', methods=['GET', 'POST'])
 def stores():
     with get_db_connection() as conn:
@@ -1042,7 +1084,7 @@ def update_account(account_id):
 
 @app.route('/items')
 def get_items():
-    if 'authorized' not in session:
+    if 'user_id' not in session or 'role' not in session:
         return jsonify({'message': 'Unauthorized'}), 401
 
     current_role   = session['role']
@@ -1053,7 +1095,8 @@ def get_items():
     base = '''
         SELECT i.id,i.name,i.category,i.max_stock_level,i.in_stock_level,
                i.reorder_level,i.picture,s.name AS supplier,
-               i.store_address,i.unit
+               i.store_address,i.unit,
+               (SELECT MAX(updated_at) FROM stock_updates WHERE item_id = i.id) AS updated_at
           FROM items i
      LEFT JOIN suppliers s ON i.supplier_id=s.id
         WHERE 1=1
@@ -1091,7 +1134,8 @@ def get_item(item_id):
             SELECT 
                 i.id, i.name, i.category, i.max_stock_level, 
                 i.in_stock_level, i.reorder_level, 
-                i.picture, s.name AS supplier, i.supplier_id, i.store_address, i.unit
+                i.picture, s.name AS supplier, i.supplier_id, i.store_address, i.unit,
+                (SELECT MAX(updated_at) FROM stock_updates WHERE item_id = i.id) AS updated_at
             FROM items i
             LEFT JOIN suppliers s ON i.supplier_id = s.id
             WHERE i.id = ?
@@ -1105,7 +1149,7 @@ def get_item(item_id):
 @app.route('/delete_item/<int:item_id>', methods=['POST'])
 def delete_item(item_id):
     print(f"DELETE request received for item_id: {item_id}")
-    if not session.get('authorized'):
+    if 'user_id' not in session or 'role' not in session:
         return jsonify({'message': 'Unauthorized'}), 401
 
     current_user_role = session.get('role')
@@ -1152,7 +1196,7 @@ def update_item(item_id):
     # ---------- 0.  basic guards ----------
     if not request.is_json:
         return jsonify({'message': 'Only JSON accepted'}), 400
-    if 'authorized' not in session:
+    if 'user_id' not in session or 'role' not in session:
         return jsonify({'message': 'Unauthorized'}), 401
 
     current_role   = session['role']
@@ -1227,7 +1271,7 @@ def update_item(item_id):
 @app.route('/delete_stock_update/<int:record_id>', methods=['DELETE'])
 def delete_stock_update(record_id):
     # Security validation
-    if 'authorized' not in session:
+    if 'user_id' not in session or 'role' not in session:
         return jsonify({'message': 'Unauthorized'}), 401
 
     current_role = session.get('role')
@@ -1286,7 +1330,7 @@ def delete_stock_update(record_id):
 @app.route('/delete_user_stock_updates/<string:username>', methods=['DELETE'])
 def delete_user_stock_updates(username):
     """Delete all stock updates for a specific user with store validation"""
-    if 'authorized' not in session:
+    if 'user_id' not in session or 'role' not in session:
         return jsonify({'message': 'Unauthorized'}), 401
 
     current_role = session.get('role')
@@ -1341,7 +1385,7 @@ def download_stock_report():
     """Generate store-specific stock warning PDF report using Platypus Table."""
 
     # Authorization check
-    if 'authorized' not in session:
+    if 'user_id' not in session or 'role' not in session:
         return jsonify({'message': 'Unauthorized'}), 401
 
     current_role = session.get('role')
@@ -1451,7 +1495,7 @@ def download_stock_report():
                 data = [["Item Name", "Restock Qty", "Current", "Update Date", "Updated By"]]
 
                 for r in grouped[supplier]:
-                    restock = r['max_stock_level'] - r['in_stock_level']
+                    restock = max(0, r['max_stock_level'] - r['in_stock_level'])
                     u = r['unit']
                     # Format the update date
                     if r['last_updated'] and r['last_updated'] != 'Never Updated':
@@ -1496,12 +1540,12 @@ def download_stock_report():
 # ---------------------------------------------------------------
 #  Store-specific date report (Items updated on a specific date)
 # ---------------------------------------------------------------
-@app.route('/download_store_date_report', methods=['GET'])
-def download_store_date_report():
-    """Generate store-specific date report showing items updated on a specific date."""
+@app.route('/download_stock_warnings_report', methods=['GET'])
+def download_stock_warnings_report():
+    """Generate store-specific stock warnings report for a specific date, excluding items that don't need restocking."""
     
     # Authorization check
-    if 'authorized' not in session:
+    if 'user_id' not in session or 'role' not in session:
         return jsonify({'message': 'Unauthorized'}), 401
 
     current_role = session.get('role')
@@ -1538,7 +1582,7 @@ def download_store_date_report():
                 COALESCE(u.employee_name, 'System') AS updated_by,
                 su.updated_at AS last_updated,
                 CASE 
-                    WHEN i.in_stock_level <= i.reorder_level THEN (i.max_stock_level - i.in_stock_level)
+                    WHEN i.in_stock_level <= i.reorder_level THEN max(0, i.max_stock_level - i.in_stock_level)
                     ELSE 0 
                 END AS reorder_quantity
             FROM items i
@@ -1563,6 +1607,7 @@ def download_store_date_report():
                   AND DATE(su.updated_at) = ?
             LEFT JOIN users u ON su.user_id = u.id
             WHERE i.store_address = ?
+            AND i.in_stock_level <= i.reorder_level
             ORDER BY s.name, i.category, i.name
         ''', (store_filter, report_date, store_filter, report_date, store_filter, report_date, store_filter))
         rows = cursor.fetchall()
@@ -1571,9 +1616,6 @@ def download_store_date_report():
         grouped = defaultdict(list)
 
         def with_unit(n, unit):
-            """Format number with unit, handling None values"""
-            if n is None:
-                return 'N/A'
             return f"{n} {unit}" if unit else str(n)
 
         for r in rows:
@@ -1607,22 +1649,21 @@ def download_store_date_report():
         # Get current date and time in application timezone
         current_datetime = get_current_time_str()
 
-        # Calculate summary statistics
         total_items = len(rows)
-        categories = set(r['category'] for r in rows if r['category'])
+        categories = list(set(r['category'] for r in rows))
         total_categories = len(categories)
         
-        story = [Paragraph(f"{short_name} – Stock Update Report", title),
-                 Paragraph(f"Update Date: {report_date}", subtitle),
+        story = [Paragraph(f"{short_name} – Stock Warnings Report", title),
+                 Paragraph(f"Report Date: {report_date}", subtitle),
                  Paragraph(f"Generated on: {current_datetime} (Los Angeles Time)", subtitle),
-                 Paragraph(f"Total Items Updated: {total_items} | Categories: {total_categories}", subtitle),
+                 Paragraph(f"Total Items Needing Restock: {total_items} | Categories: {total_categories}", subtitle),
                  Spacer(1, 12)]
 
         if not rows:
-            story.append(Paragraph("No items were updated on this date.", styles['Normal']))
+            story.append(Paragraph("No items need restocking for this date.", styles['Normal']))
         else:
             # Add category breakdown
-            story.append(Paragraph("Categories Updated:", styles['Heading3']))
+            story.append(Paragraph("Categories with Items Needing Restock:", styles['Heading3']))
             category_list = ", ".join(sorted(categories))
             story.append(Paragraph(category_list, styles['Normal']))
             story.append(Paragraph("Note: Reorder Qty shows how much to reorder when current stock ≤ reorder level", styles['Normal']))
@@ -1634,21 +1675,21 @@ def download_store_date_report():
             for supplier, items in grouped.items():
                 story.append(Paragraph(supplier, headingSupp))
                 story.append(Spacer(1, 6))
-
-                data = [["Item", "Category", "Restock", "Current", "Max", "Updated By", "Last Updated"]]
+                
+                data = [['Item', 'Reorder Qty', 'Category', 'Current', 'Reorder', 'Last Updated', 'Updated By']]
                 
                 for item in items:
                     data.append([
                         item['name'],
-                        item['category'] or 'N/A',
                         with_unit(item['reorder_quantity'], item['unit']),
+                        item['category'],
                         with_unit(item['in_stock_level'], item['unit']),
-                        with_unit(item['max_stock_level'], item['unit']),
-                        item['updated_by'],
-                        item['last_updated'] if item['last_updated'] else 'N/A'
+                        with_unit(item['reorder_level'], item['unit']),
+                        format_datetime_for_display(item['last_updated']) if item['last_updated'] != 'Never Updated' else 'Never Updated',
+                        item['updated_by']
                     ])
-
-                tbl = Table(data, colWidths=[110, 140, 40, 40, 40, 60, 80])
+                
+                tbl = Table(data, colWidths=[100, 60, 140, 40, 40, 80, 60])
                 tbl.setStyle(TableStyle([
                     ('BACKGROUND', (0, 0), (-1, 0), HEADER_BG),
                     ('TEXTCOLOR', (0, 0), (-1, 0), HEADER_FG),
@@ -1657,33 +1698,32 @@ def download_store_date_report():
                     ('FONTSIZE', (0, 0), (-1, 0), 10),
                     ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
                     ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                    # Highlight the Reorder Qty column (column 1) with a light yellow background
+                    ('BACKGROUND', (1, 1), (1, -1), HexColor("#fff2cc")),
+                    ('FONTNAME', (1, 1), (1, -1), 'Helvetica-Bold'),
                     ('GRID', (0, 0), (-1, -1), 1, colors.black),
                     ('FONTSIZE', (0, 1), (-1, -1), 8),
                     ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                     ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-                    # Highlight reorder quantity column (column 2)
-                    ('BACKGROUND', (2, 1), (2, -1), HexColor("#FFF4CC")),
-                    ('FONT', (2, 1), (2, -1), 'Helvetica-Bold', 10),
-                    ('TEXTCOLOR', (2, 1), (2, -1), HexColor("#DC3545")),
                 ]))
-
-                story.append(tbl)
-                story.append(Spacer(1, 12))
-
+                story.extend([tbl, Spacer(1, 12)])
+        
         doc.build(story)
         buffer.seek(0)
         
-        fname = f"Store_Date_Report_{short_name.replace(' ', '_')}_{report_date}.pdf"
-        return send_file(buffer, as_attachment=True,
-                         download_name=fname, mimetype='application/pdf')
-
+        return send_file(
+            buffer,
+            as_attachment=True,
+            download_name=f"Stock_Warnings_Report_{short_name.replace(' ', '_')}_{report_date}.pdf",
+            mimetype='application/pdf'
+        )
 
 # ---------------------------------------------------------------
 #  Comprehensive UPDATE report (All categories from one session)
 # ---------------------------------------------------------------
 @app.route('/download_comprehensive_update_report')
 def download_comprehensive_update_report():
-    if 'authorized' not in session:
+    if 'user_id' not in session or 'role' not in session:
         return jsonify({'message': 'Unauthorized'}), 401
 
     rec_id = int(request.args.get('record', 0))
@@ -1707,23 +1747,30 @@ def download_comprehensive_update_report():
     with get_db_connection() as c:
         cur = c.cursor()
         
-        # Get all items updated in this session for the specific category
+        # Get ALL items in the category, with indication of which ones were updated in this session
         cur.execute('''
             SELECT i.name,
                    i.category,
-                   su.stock_after AS current,
+                   i.in_stock_level AS current,
                    i.reorder_level,
                    i.max_stock_level,
                    i.unit,
-                   s.name AS supplier_name
-            FROM stock_updates su
-            JOIN items i ON su.item_id = i.id
+                   s.name AS supplier_name,
+                   CASE 
+                       WHEN su.stock_after IS NOT NULL THEN 'Updated'
+                       ELSE 'Not Updated'
+                   END AS update_status,
+                   su.stock_before,
+                   su.stock_after
+            FROM items i
             LEFT JOIN suppliers s ON i.supplier_id = s.id
-            WHERE su.store_address = ?
-            AND strftime('%Y-%m-%d %H:%M', su.updated_at) = ?
+            LEFT JOIN stock_updates su ON su.item_id = i.id 
+                AND su.store_address = i.store_address
+                AND strftime('%Y-%m-%d %H:%M', su.updated_at) = ?
+            WHERE i.store_address = ?
             AND i.category = ?
             ORDER BY s.name, i.name
-        ''', (store, ts_min, category))
+        ''', (ts_min, store, category))
         rows = cur.fetchall()
 
     # ---------- PDF ----------
@@ -1759,17 +1806,36 @@ def download_comprehensive_update_report():
              Spacer(1, 4),
              Paragraph(f"Updated by {employee} at {ts_min}", subtitle),
              Spacer(1, 12)]
+    
+    # Add summary statistics
+    if rows:
+        updated_count = sum(1 for r in rows if r['update_status'] == 'Updated')
+        total_count = len(rows)
+        not_updated_count = total_count - updated_count
+        
+        summary_text = f"Category Summary: {updated_count} items updated, {not_updated_count} items not updated (Total: {total_count} items)"
+        story.append(Paragraph(summary_text, styles['Normal']))
+        story.append(Paragraph("Note: Status column shows stock level changes (before → after). Items with different before/after values were modified in this session.", styles['Normal']))
+        story.append(Spacer(1, 8))
 
     if not rows:
-        story.append(Paragraph("No items found in this update session.", styles['Normal']))
+        story.append(Paragraph("No items found in this category.", styles['Normal']))
     else:
-        data = [["Item", "Restock", "Current", "Reorder", "Max", "Supplier"]]
+        data = [["Item", "Status", "Restock", "Current", "Reorder", "Max", "Supplier"]]
         def u(n, unit): return f"{n} {unit}" if unit else str(n)
 
         for r in rows:
-            restock = r['max_stock_level'] - r['current']
+            restock = max(0, r['max_stock_level'] - r['current'])
+            
+            # Show stock change in status column (before → after)
+            if r['stock_before'] is not None and r['stock_after'] is not None:
+                status_text = f"{r['stock_before']} → {r['stock_after']}"
+            else:
+                status_text = f"{r['current']} → {r['current']}"  # No change
+            
             data.append([
                 r['name'],
+                status_text,
                 u(restock, r['unit']),
                 u(r['current'], r['unit']),
                 u(r['reorder_level'], r['unit']),
@@ -1780,7 +1846,7 @@ def download_comprehensive_update_report():
         from reportlab.platypus import Table, TableStyle
         from reportlab.lib import colors
         GRID = HexColor("#B0BEC5")
-        tbl = Table(data, colWidths=[160, 60, 55, 55, 55, 100])
+        tbl = Table(data, colWidths=[130, 80, 60, 55, 55, 55, 100])
         tbl.setStyle(TableStyle([
             ('FONT', (0, 0), (-1, 0), 'Helvetica-Bold', 10),
             ('BACKGROUND', (0, 0), (-1, 0), HexColor("#003366")),
@@ -1790,11 +1856,29 @@ def download_comprehensive_update_report():
             ('GRID', (0, 0), (-1, -1), .25, GRID),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            # Highlight Restock column (column 1) with red background and bold text
-            ('BACKGROUND', (1, 1), (1, -1), HexColor("#FFE6E6")),
-            ('FONT', (1, 1), (1, -1), 'Helvetica-Bold', 10),
-            ('TEXTCOLOR', (1, 1), (1, -1), HexColor("#DC3545"))
+            # Highlight Restock column (column 2) with red background and bold text
+            ('BACKGROUND', (2, 1), (2, -1), HexColor("#FFE6E6")),
+            ('FONT', (2, 1), (2, -1), 'Helvetica-Bold', 10),
+            ('TEXTCOLOR', (2, 1), (2, -1), HexColor("#DC3545"))
         ]))
+        
+        # Add color coding for status column based on whether stock changed
+        for i, row in enumerate(data[1:], 1):  # Skip header row
+            status_text = row[1]  # Status column
+            if ' → ' in status_text:
+                before, after = status_text.split(' → ')
+                if before.strip() != after.strip():  # Stock changed
+                    tbl.setStyle(TableStyle([
+                        ('BACKGROUND', (1, i), (1, i), HexColor("#d4edda")),
+                        ('TEXTCOLOR', (1, i), (1, i), HexColor("#155724")),
+                        ('FONT', (1, i), (1, i), 'Helvetica-Bold', 9)
+                    ]))
+                else:  # No change
+                    tbl.setStyle(TableStyle([
+                        ('BACKGROUND', (1, i), (1, i), HexColor("#f8f9fa")),
+                        ('TEXTCOLOR', (1, i), (1, i), HexColor("#6c757d")),
+                        ('FONT', (1, i), (1, i), 'Helvetica', 9)
+                    ]))
         story.extend([tbl, Spacer(1, 12)])
 
     doc.build(story)
@@ -1810,7 +1894,7 @@ def download_comprehensive_update_report():
 def create_account():
 
     # Authorization check
-    if 'authorized' not in session:
+    if 'user_id' not in session or 'role' not in session:
         return jsonify({'message': 'Unauthorized'}), 401
 
     current_role = session.get('role')
@@ -1863,8 +1947,8 @@ def create_account():
                 INSERT INTO users (
                     username, password, employee_name,
                     store_address, phone_number, email,
-                    role, is_authorized
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    role, is_authorized, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 data['username'],
                 password,
@@ -1937,11 +2021,7 @@ def set_stock_level(item_id):
             if not isinstance(new_stock_level, int) or new_stock_level < 0:
                 return jsonify({'message': 'Invalid stock level'}), 400
 
-            if new_stock_level > item['max_stock_level']:
-                return jsonify({
-                    'message': f'Cannot exceed Max Stock Level ({item["max_stock_level"]})',
-                    'max_stock': item['max_stock_level']
-                }), 400
+            # Allow stock level to exceed max_stock_level, but restock will be 0 in such cases
 
             # Record stock update with store information
             cursor.execute('''
@@ -2000,7 +2080,7 @@ def set_stock_level(item_id):
 def stock_update_history():
     """Get multi-store stock update history grouped by user"""
     try:
-        if 'authorized' not in session:
+        if 'user_id' not in session or 'role' not in session:
             return jsonify({'message': 'Unauthorized'}), 401
 
         store_filter = request.args.get('store', 'all')
@@ -2027,8 +2107,6 @@ def stock_update_history():
         filters = []
 
         # Validate store filter format
-
-
         if current_role != 'owner':
             filters.append('su.store_address = ?')
             params.append(session.get('store_address'))
@@ -2039,7 +2117,7 @@ def stock_update_history():
             params.append(store_filter)
 
         if filters:
-            base_query += ' WHERE ' + ' AND '.join(filters)
+            base_query += ' AND ' + ' AND '.join(filters)
 
         base_query += ' ORDER BY su.updated_at DESC'
 
@@ -2054,42 +2132,45 @@ def stock_update_history():
             'records' : []
         })
 
+        # Group records by user, store, timestamp (up to minutes), and category
+        grouped_records = defaultdict(list)
+        
         for row in raw_history:
             u            = row['username']
             store_addr   = row['store_address']
             category     = row['category']
             ts_min      = row['updated_at'][:16]          # keep up to min
-            composite_id = (store_addr, ts_min, category)  # Group by store, timestamp, and category
+            group_key    = (u, store_addr, ts_min, category)
+            
+            grouped_records[group_key].append(row)
 
+        # Process grouped records
+        for (u, store_addr, ts_min, category), rows in grouped_records.items():
             usr = user_history[u]
             if usr['username'] is None:
                 usr['username'] = u
 
-            # Check if we already have a record for this category update session
-            existing_record = None
-            for record in usr['records']:
-                if (record['store_address'] == store_addr and 
-                    record['updated_at'][:16] == ts_min and
-                    record['category'] == category):
-                    existing_record = record
-                    break
-
-            if existing_record is None:
-                # Calculate restock amount
-                restock = row['max_stock_level'] - row['stock_after'] if row['max_stock_level'] and row['stock_after'] else 0
-                
-                # Create new record for this category update session
-                usr['records'].append({
-                    'id'           : row['id'],        # one representative id
-                    'updated_at'   : row['updated_at'],
-                    'store_address': store_addr,
-                    'category'     : category,         # Single category per record
-                    'categories'   : [category],       # Keep for compatibility with frontend
-                    'item_name'    : row['item_name'],
-                    'max_stock_level': row['max_stock_level'],
-                    'unit'         : row['unit'],
-                    'restock'      : restock
-                })
+            # Use the first row for the record details (they should all have same timestamp and category)
+            first_row = rows[0]
+            
+            # Calculate total restock amount for all items in this group
+            total_restock = 0
+            for row in rows:
+                restock = max(0, row['max_stock_level'] - row['stock_after']) if row['max_stock_level'] and row['stock_after'] else 0
+                total_restock += restock
+            
+            # Create record for this category update session
+            usr['records'].append({
+                'id'           : first_row['id'],        # one representative id
+                'updated_at'   : first_row['updated_at'],
+                'store_address': store_addr,
+                'category'     : category,         # Single category per record
+                'categories'   : [category],       # Keep for compatibility with frontend
+                'item_name'    : f"{len(rows)} items",  # Show count of items updated
+                'max_stock_level': first_row['max_stock_level'],
+                'unit'         : first_row['unit'],
+                'restock'      : total_restock
+            })
 
         # Sort records newest-first and limit to 100 per user
         for usr in user_history.values():
@@ -2156,10 +2237,43 @@ def delete_supplier(supplier_id):
         except sqlite3.Error as e:
             return jsonify({'error': str(e)}), 500
 
+@app.route('/suppliers/<int:supplier_id>', methods=['PUT'])
+def update_supplier(supplier_id):
+    if 'user_id' not in session or 'role' not in session:
+        return jsonify({'message': 'Unauthorized'}), 401
+    
+    data = request.json
+    new_name = data.get('name', '').strip()
+    
+    if not new_name:
+        return jsonify({'message': 'Supplier name cannot be empty'}), 400
+    
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            # Check if supplier exists
+            cursor.execute('SELECT name FROM suppliers WHERE id = ?', (supplier_id,))
+            supplier = cursor.fetchone()
+            if not supplier:
+                return jsonify({'message': 'Supplier not found'}), 404
+            
+            # Check if new name already exists (excluding current supplier)
+            cursor.execute('SELECT id FROM suppliers WHERE name = ? AND id != ?', (new_name, supplier_id))
+            if cursor.fetchone():
+                return jsonify({'message': 'Supplier name already exists'}), 400
+            
+            # Update the supplier name
+            cursor.execute('UPDATE suppliers SET name = ? WHERE id = ?', (new_name, supplier_id))
+            conn.commit()
+            
+            return jsonify({'message': 'Supplier updated successfully', 'name': new_name}), 200
+        except sqlite3.Error as e:
+            return jsonify({'message': f'Database error: {str(e)}'}), 500
+
 @app.route('/debug/categories')
 def debug_categories():
     """Debug endpoint to check categories in the database"""
-    if 'authorized' not in session:
+    if 'user_id' not in session or 'role' not in session:
         return jsonify({'message': 'Unauthorized'}), 401
     
     with get_db_connection() as conn:
@@ -2194,7 +2308,7 @@ def debug_categories():
 @app.route('/debug/stock_history')
 def debug_stock_history():
     """Debug endpoint to check stock update history data"""
-    if 'authorized' not in session:
+    if 'user_id' not in session or 'role' not in session:
         return jsonify({'message': 'Unauthorized'}), 401
     
     store_filter = request.args.get('store', 'all')
@@ -2267,7 +2381,7 @@ def debug_stock_history():
 
         if existing_record is None:
             # Calculate restock amount
-            restock = row['max_stock_level'] - row['stock_after'] if row['max_stock_level'] and row['stock_after'] else 0
+            restock = max(0, row['max_stock_level'] - row['stock_after']) if row['max_stock_level'] and row['stock_after'] else 0
             
             # Create new record for this category update session
             usr['records'].append({

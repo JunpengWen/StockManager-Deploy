@@ -308,21 +308,30 @@
 
         <!-- Stock Warnings -->
         <div class="card p-3 mb-3">
-            <div class="d-flex justify-content-between align-items-center mb-3">
-                <h3>Multi/Store Stock Warnings</h3>
-                <div class="d-flex align-items-center gap-3">
-                    <button class="btn btn-danger" onclick="downloadMultiStoreReport()">
-                        <i class="bi bi-file-earmark-pdf"></i> Download Report
-                    </button>
-                    <select class="form-select store-select" id="warningStoreFilter" onchange="fetchStockWarnings()">
-                        <option value="all">All Stores</option>
+            <h3>Multi/Store Stock Warnings</h3>
+            <div class="row g-3">
+                <div class="col-md-4">
+                    <label class="form-label">Store</label>
+                    <select class="form-select" id="warningStoreFilter">
+                        <option value="">Select Store</option>
                         {% for store in valid_stores %}
                         <option value="{{ store }}">{{ store.split(',')[0] }}</option>
                         {% endfor %}
                     </select>
                 </div>
+                <div class="col-md-4">
+                    <label class="form-label">Date</label>
+                    <input type="date" class="form-control" id="warningDate" required>
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">&nbsp;</label>
+                    <div>
+                        <button class="btn btn-danger" onclick="generateStockWarningsReport()">
+                            <i class="bi bi-file-earmark-pdf"></i> Generate Report
+                        </button>
+                    </div>
+                </div>
             </div>
-            <div id="warningListContainer" class="accordion"></div>
         </div>
 
         <!-- Inventory Checklist -->
@@ -458,33 +467,7 @@
 
 
 
-        <!-- Store Date Report -->
-        <div class="card p-3 mb-3">
-            <h3>Store Date Report</h3>
-            <div class="row g-3">
-                <div class="col-md-4">
-                    <label class="form-label">Store</label>
-                    <select class="form-select" id="dateReportStoreFilter">
-                        <option value="">Select Store</option>
-                        {% for store in valid_stores %}
-                        <option value="{{ store }}">{{ store.split(',')[0] }}</option>
-                        {% endfor %}
-                    </select>
-                </div>
-                <div class="col-md-4">
-                    <label class="form-label">Date</label>
-                    <input type="date" class="form-control" id="dateReportDate" required>
-                </div>
-                <div class="col-md-4">
-                    <label class="form-label">&nbsp;</label>
-                    <div>
-                        <button class="btn btn-primary" onclick="generateStoreDateReport()">
-                            <i class="bi bi-file-earmark-pdf"></i> Generate Report
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </div>
+
 
         <!-- Stock History -->
         <div class="card p-3">
@@ -662,6 +645,11 @@
                                 id="categoryAddButton"
                                 onclick="addCategory()">Add</button>
                     </div>
+                    <div class="mt-3">
+                        <small class="text-muted">
+                            <i class="bi bi-info-circle"></i> Click on a category name to edit it inline
+                        </small>
+                    </div>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
@@ -688,6 +676,11 @@
                                placeholder="New supplier name" aria-label="New supplier name">
                         <button class="btn btn-primary" type="button" id="supplierAddButton"
                                 onclick="addSupplier()">Add</button>
+                    </div>
+                    <div class="mt-3">
+                        <small class="text-muted">
+                            <i class="bi bi-info-circle"></i> Click on a supplier name to edit it inline
+                        </small>
                     </div>
                 </div>
                 <div class="modal-footer">
@@ -760,6 +753,39 @@
     <script>
         function formatWithUnit(value, unit) {
             return unit ? `${value} ${unit}` : value;
+        }
+
+        // Timezone helper function for Los Angeles time
+        function formatDateInLATime(dateString) {
+            try {
+                const date = new Date(dateString);
+                return date.toLocaleString('en-US', {
+                    year: 'numeric',
+                    month: '2-digit',
+                    day: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit',
+                    hour12: false
+                });
+            } catch (error) {
+                console.error('Error formatting date:', error);
+                return dateString;
+            }
+        }
+        
+        function formatDateOnlyInLATime(dateString) {
+            try {
+                const date = new Date(dateString);
+                return date.toLocaleDateString('en-US', {
+                    year: 'numeric',
+                    month: '2-digit',
+                    day: '2-digit'
+                });
+            } catch (error) {
+                console.error('Error formatting date:', error);
+                return dateString;
+            }
         }
 
         document.addEventListener('DOMContentLoaded', initializeStores);
@@ -1219,12 +1245,25 @@
 
                 const supplierList = document.getElementById('supplierList');
                 supplierList.innerHTML = suppliers.map(supplier => `
-                    <div class="d-flex justify-content-between align-items-center mb-2">
-                        <span>${supplier.name}</span>
-                        <button class="btn btn-sm btn-danger"
-                                onclick="deleteSupplier(${supplier.id})">
-                            &times;
-                        </button>
+                    <div class="d-flex justify-content-between align-items-center mb-2" data-supplier-id="${supplier.id}">
+                        <span class="supplier-name" onclick="editSupplierName(this, '${supplier.name}', ${supplier.id})" 
+                              style="cursor: pointer; padding: 2px 6px; border-radius: 3px; transition: background-color 0.2s;"
+                              onmouseover="this.style.backgroundColor='#f8f9fa'" 
+                              onmouseout="this.style.backgroundColor='transparent'">
+                            ${supplier.name}
+                        </span>
+                        <div class="btn-group btn-group-sm">
+                            <button class="btn btn-outline-primary" 
+                                    onclick="editSupplierName(this.previousElementSibling, '${supplier.name}', ${supplier.id})"
+                                    title="Edit">
+                                <i class="bi bi-pencil"></i>
+                            </button>
+                            <button class="btn btn-outline-danger"
+                                    onclick="deleteSupplier(${supplier.id})"
+                                    title="Delete">
+                                <i class="bi bi-trash"></i>
+                            </button>
+                        </div>
                     </div>
                 `).join('');
 
@@ -1241,9 +1280,23 @@
             if (newSupplier) {
                 const supplierList = document.getElementById('supplierList');
                 supplierList.innerHTML += `
-                    <div class="d-flex justify-content-between align-items-center mb-2">
-                        <span>${newSupplier}</span>
-                        <button class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">&times;</button>
+                    <div class="d-flex justify-content-between align-items-center mb-2" data-supplier-name="${newSupplier}">
+                        <span class="supplier-name" onclick="editSupplierName(this, '${newSupplier}', null)" 
+                              style="cursor: pointer; padding: 2px 6px; border-radius: 3px; transition: background-color 0.2s;"
+                              onmouseover="this.style.backgroundColor='#f8f9fa'" 
+                              onmouseout="this.style.backgroundColor='transparent'">
+                            ${newSupplier}
+                        </span>
+                        <div class="btn-group btn-group-sm">
+                            <button class="btn btn-outline-primary" 
+                                    onclick="editSupplierName(this.previousElementSibling, '${newSupplier}', null)"
+                                    title="Edit">
+                                <i class="bi bi-pencil"></i>
+                            </button>
+                            <button class="btn btn-outline-danger" onclick="this.parentElement.parentElement.remove()" title="Delete">
+                                <i class="bi bi-trash"></i>
+                            </button>
+                        </div>
                     </div>
                 `;
                 document.getElementById('newSupplier').value = '';
@@ -1296,6 +1349,170 @@
             } catch (error) {
                 console.error('Error deleting supplier:', error);
                 alert('Error deleting supplier: ' + error.message);
+            }
+        }
+
+        // Inline editing function for suppliers
+        function editSupplierName(element, currentName, supplierId) {
+            const container = element.parentElement;
+            const currentText = element.textContent.trim();
+            
+            // Create input field
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'form-control form-control-sm';
+            input.value = currentText;
+            input.style.width = '200px';
+            
+            // Create save and cancel buttons
+            const saveBtn = document.createElement('button');
+            saveBtn.className = 'btn btn-success btn-sm ms-1';
+            saveBtn.innerHTML = '<i class="bi bi-check"></i>';
+            saveBtn.onclick = () => saveSupplierName(input.value.trim(), supplierId, container, currentText);
+            
+            const cancelBtn = document.createElement('button');
+            cancelBtn.className = 'btn btn-secondary btn-sm ms-1';
+            cancelBtn.innerHTML = '<i class="bi bi-x"></i>';
+            cancelBtn.onclick = () => {
+                container.innerHTML = `
+                    <span class="supplier-name" onclick="editSupplierName(this, '${currentText}', ${supplierId})" 
+                          style="cursor: pointer; padding: 2px 6px; border-radius: 3px; transition: background-color 0.2s;"
+                          onmouseover="this.style.backgroundColor='#f8f9fa'" 
+                          onmouseout="this.style.backgroundColor='transparent'">
+                        ${currentText}
+                    </span>
+                    <div class="btn-group btn-group-sm">
+                        <button class="btn btn-outline-primary" 
+                                onclick="editSupplierName(this.previousElementSibling, '${currentText}', ${supplierId})"
+                                title="Edit">
+                            <i class="bi bi-pencil"></i>
+                        </button>
+                        <button class="btn btn-outline-danger"
+                                onclick="deleteSupplier(${supplierId})"
+                                title="Delete">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                    </div>
+                `;
+            };
+            
+            // Replace the span with input and buttons
+            container.innerHTML = '';
+            container.appendChild(input);
+            container.appendChild(saveBtn);
+            container.appendChild(cancelBtn);
+            
+            // Focus the input
+            input.focus();
+            input.select();
+            
+            // Add keyboard shortcuts
+            input.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') {
+                    saveBtn.click();
+                } else if (e.key === 'Escape') {
+                    cancelBtn.click();
+                }
+            });
+        }
+
+        // Save supplier name function
+        async function saveSupplierName(newName, supplierId, container, oldName) {
+            if (!newName || newName === oldName) {
+                // Restore original display
+                editSupplierName(container.querySelector('input'), oldName, supplierId);
+                return;
+            }
+
+            // For newly added suppliers (supplierId is null), just update the display
+            if (supplierId === null) {
+                container.innerHTML = `
+                    <span class="supplier-name" onclick="editSupplierName(this, '${newName}', null)" 
+                          style="cursor: pointer; padding: 2px 6px; border-radius: 3px; transition: background-color 0.2s;"
+                          onmouseover="this.style.backgroundColor='#f8f9fa'" 
+                          onmouseout="this.style.backgroundColor='transparent'">
+                        ${newName}
+                    </span>
+                    <div class="btn-group btn-group-sm">
+                        <button class="btn btn-outline-primary" 
+                                onclick="editSupplierName(this.previousElementSibling, '${newName}', null)"
+                                title="Edit">
+                            <i class="bi bi-pencil"></i>
+                        </button>
+                        <button class="btn btn-outline-danger" onclick="this.parentElement.parentElement.remove()" title="Delete">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                    </div>
+                `;
+                return;
+            }
+
+            try {
+                const response = await fetch(`/suppliers/${supplierId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: newName })
+                });
+
+                if (response.ok) {
+                    // Update the display with new name
+                    container.innerHTML = `
+                        <span class="supplier-name" onclick="editSupplierName(this, '${newName}', ${supplierId})" 
+                              style="cursor: pointer; padding: 2px 6px; border-radius: 3px; transition: background-color 0.2s;"
+                              onmouseover="this.style.backgroundColor='#f8f9fa'" 
+                              onmouseout="this.style.backgroundColor='transparent'">
+                            ${newName}
+                        </span>
+                        <div class="btn-group btn-group-sm">
+                            <button class="btn btn-outline-primary" 
+                                    onclick="editSupplierName(this.previousElementSibling, '${newName}', ${supplierId})"
+                                    title="Edit">
+                                <i class="bi bi-pencil"></i>
+                            </button>
+                            <button class="btn btn-outline-danger"
+                                    onclick="deleteSupplier(${supplierId})"
+                                    title="Delete">
+                                <i class="bi bi-trash"></i>
+                            </button>
+                        </div>
+                    `;
+                    
+                    // Refresh supplier dropdowns
+                    await initializeSuppliers();
+                    
+                    // Refresh inventory items if they are currently displayed
+                    const multiStoreItemSection = document.getElementById('multiStoreItemSection');
+                    if (multiStoreItemSection && !multiStoreItemSection.classList.contains('d-none')) {
+                        await loadStoreItems();
+                    }
+                    
+                    // If edit modal is open, refresh the supplier dropdown in the modal
+                    const editModal = document.getElementById('editItemModal');
+                    if (editModal && bootstrap.Modal.getInstance(editModal)) {
+                        const editItemSupplier = document.getElementById('editItemSupplier');
+                        if (editItemSupplier) {
+                            // Re-fetch the current item to get updated supplier information
+                            const currentItemId = document.getElementById('editItemId').value;
+                            if (currentItemId) {
+                                try {
+                                    const itemResponse = await fetch(`/items/${currentItemId}`);
+                                    if (itemResponse.ok) {
+                                        const item = await itemResponse.json();
+                                        editItemSupplier.value = item.supplier_id ? String(item.supplier_id) : '';
+                                    }
+                                } catch (error) {
+                                    console.error('Error refreshing edit modal supplier:', error);
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    const error = await response.json();
+                    alert('Error updating supplier: ' + error.message);
+                }
+            } catch (error) {
+                console.error('Error updating supplier:', error);
+                alert('Error updating supplier: ' + error.message);
             }
         }
 
@@ -1541,7 +1758,7 @@
                     badge.className = `badge ${getStockStatusClass(it)}`;
                     badge.textContent = getStockStatusText(it);
 
-                    cols[4].textContent = new Date().toLocaleDateString();
+                    cols[4].textContent = it.updated_at ? formatDateOnlyInLATime(it.updated_at) : 'Never Updated';
                 }
 
                 /* manager table order differs – add similar updates if needed */
@@ -1570,9 +1787,23 @@
             const categoryList = document.getElementById('categoryList');
 
             categoryList.innerHTML = categories.map(c => `
-                <div class="d-flex justify-content-between align-items-center mb-2">
-                    <span>${c}</span>
-                    <button class="btn btn-sm btn-danger" onclick="deleteCategory('${c}')">&times;</button>
+                <div class="d-flex justify-content-between align-items-center mb-2" data-category-name="${c}">
+                    <span class="category-name" onclick="editCategoryName(this, '${c}')" 
+                          style="cursor: pointer; padding: 2px 6px; border-radius: 3px; transition: background-color 0.2s;"
+                          onmouseover="this.style.backgroundColor='#f8f9fa'" 
+                          onmouseout="this.style.backgroundColor='transparent'">
+                        ${c}
+                    </span>
+                    <div class="btn-group btn-group-sm">
+                        <button class="btn btn-outline-primary" 
+                                onclick="editCategoryName(this.previousElementSibling, '${c}')"
+                                title="Edit">
+                            <i class="bi bi-pencil"></i>
+                        </button>
+                        <button class="btn btn-outline-danger" onclick="deleteCategory('${c}')" title="Delete">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                    </div>
                 </div>
             `).join('');
 
@@ -1584,9 +1815,23 @@
             if (newCategory) {
                 const categoryList = document.getElementById('categoryList');
                 categoryList.innerHTML += `
-                    <div class="d-flex justify-content-between align-items-center mb-2">
-                        <span>${newCategory}</span>
-                        <button class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">&times;</button>
+                    <div class="d-flex justify-content-between align-items-center mb-2" data-category-name="${newCategory}">
+                        <span class="category-name" onclick="editCategoryName(this, '${newCategory}')" 
+                              style="cursor: pointer; padding: 2px 6px; border-radius: 3px; transition: background-color 0.2s;"
+                              onmouseover="this.style.backgroundColor='#f8f9fa'" 
+                              onmouseout="this.style.backgroundColor='transparent'">
+                            ${newCategory}
+                        </span>
+                        <div class="btn-group btn-group-sm">
+                            <button class="btn btn-outline-primary" 
+                                    onclick="editCategoryName(this.previousElementSibling, '${newCategory}')"
+                                    title="Edit">
+                                <i class="bi bi-pencil"></i>
+                            </button>
+                            <button class="btn btn-outline-danger" onclick="this.parentElement.parentElement.remove()" title="Delete">
+                                <i class="bi bi-trash"></i>
+                            </button>
+                        </div>
                     </div>
                 `;
                 document.getElementById('newCategory').value = '';
@@ -1610,6 +1855,143 @@
                 }
             } catch (error) {
                 alert('Failed to save categories: ' + error.message);
+            }
+        }
+
+        // Inline editing function for categories
+        function editCategoryName(element, currentName) {
+            const container = element.parentElement;
+            const currentText = element.textContent.trim();
+            
+            // Create input field
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'form-control form-control-sm';
+            input.value = currentText;
+            input.style.width = '200px';
+            
+            // Create save and cancel buttons
+            const saveBtn = document.createElement('button');
+            saveBtn.className = 'btn btn-success btn-sm ms-1';
+            saveBtn.innerHTML = '<i class="bi bi-check"></i>';
+            saveBtn.onclick = () => saveCategoryName(input.value.trim(), container, currentText);
+            
+            const cancelBtn = document.createElement('button');
+            cancelBtn.className = 'btn btn-secondary btn-sm ms-1';
+            cancelBtn.innerHTML = '<i class="bi bi-x"></i>';
+            cancelBtn.onclick = () => {
+                container.innerHTML = `
+                    <span class="category-name" onclick="editCategoryName(this, '${currentText}')" 
+                          style="cursor: pointer; padding: 2px 6px; border-radius: 3px; transition: background-color 0.2s;"
+                          onmouseover="this.style.backgroundColor='#f8f9fa'" 
+                          onmouseout="this.style.backgroundColor='transparent'">
+                        ${currentText}
+                    </span>
+                    <div class="btn-group btn-group-sm">
+                        <button class="btn btn-outline-primary" 
+                                onclick="editCategoryName(this.previousElementSibling, '${currentText}')"
+                                title="Edit">
+                            <i class="bi bi-pencil"></i>
+                        </button>
+                        <button class="btn btn-outline-danger" onclick="deleteCategory('${currentText}')" title="Delete">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                    </div>
+                `;
+            };
+            
+            // Replace the span with input and buttons
+            container.innerHTML = '';
+            container.appendChild(input);
+            container.appendChild(saveBtn);
+            container.appendChild(cancelBtn);
+            
+            // Focus the input
+            input.focus();
+            input.select();
+            
+            // Add keyboard shortcuts
+            input.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') {
+                    saveBtn.click();
+                } else if (e.key === 'Escape') {
+                    cancelBtn.click();
+                }
+            });
+        }
+
+        // Save category name function
+        async function saveCategoryName(newName, container, oldName) {
+            if (!newName || newName === oldName) {
+                // Restore original display
+                editCategoryName(container.querySelector('input'), oldName);
+                return;
+            }
+
+            try {
+                const response = await fetch('/categories/update', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ oldName: oldName, newName: newName })
+                });
+
+                if (response.ok) {
+                    // Update the display with new name
+                    container.innerHTML = `
+                        <span class="category-name" onclick="editCategoryName(this, '${newName}')" 
+                              style="cursor: pointer; padding: 2px 6px; border-radius: 3px; transition: background-color 0.2s;"
+                              onmouseover="this.style.backgroundColor='#f8f9fa'" 
+                              onmouseout="this.style.backgroundColor='transparent'">
+                            ${newName}
+                        </span>
+                        <div class="btn-group btn-group-sm">
+                            <button class="btn btn-outline-primary" 
+                                    onclick="editCategoryName(this.previousElementSibling, '${newName}')"
+                                    title="Edit">
+                                <i class="bi bi-pencil"></i>
+                            </button>
+                            <button class="btn btn-outline-danger" onclick="deleteCategory('${newName}')" title="Delete">
+                                <i class="bi bi-trash"></i>
+                            </button>
+                        </div>
+                    `;
+                    
+                    // Refresh category dropdowns
+                    await initializeCategories();
+                    
+                    // Refresh inventory items if they are currently displayed
+                    const multiStoreItemSection = document.getElementById('multiStoreItemSection');
+                    if (multiStoreItemSection && !multiStoreItemSection.classList.contains('d-none')) {
+                        await loadStoreItems();
+                    }
+                    
+                    // If edit modal is open, refresh the category dropdown in the modal
+                    const editModal = document.getElementById('editItemModal');
+                    if (editModal && bootstrap.Modal.getInstance(editModal)) {
+                        const editItemCategory = document.getElementById('editItemCategory');
+                        if (editItemCategory) {
+                            // Re-fetch the current item to get updated category information
+                            const currentItemId = document.getElementById('editItemId').value;
+                            if (currentItemId) {
+                                try {
+                                    const itemResponse = await fetch(`/items/${currentItemId}`);
+                                    if (itemResponse.ok) {
+                                        const item = await itemResponse.json();
+                                        editItemCategory.value = item.category || '';
+                                    }
+                                } catch (error) {
+                                    console.error('Error refreshing edit modal category:', error);
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    const error = await response.json();
+                    alert('Error updating category: ' + error.message);
+                }
+            } catch (error) {
+                console.error('Error updating category:', error);
+                alert('Error updating category: ' + error.message);
             }
         }
 
@@ -1653,7 +2035,6 @@
 
                 // Load dependent systems
                 await Promise.all([
-                    fetchStockWarnings(),
                     loadStoreCategories(storeAddress),
                     loadPendingAccounts(),
                     loadAccountManagement()
@@ -1671,132 +2052,9 @@
 
 
 
-        // Stock Warnings
-        async function fetchStockWarnings() {
-            const storeFilter = document.getElementById('warningStoreFilter').value;
-            const warningContainer = document.getElementById('warningListContainer');
 
-            try {
-                const url = storeFilter === 'all'
-                        ? '/items'
-                        : `/items?store=${encodeURIComponent(storeFilter)}`;
 
-                const response = await fetch(url, {
-                    credentials: 'include' // Include session cookies
-                });
-                const items = await response.json();
 
-                // 自动包含统计信息
-                const stats = {
-                    totalItems: items.length,
-                    lowStockCount: items.filter(i => i.in_stock_level <= i.reorder_level).length,
-                    lastUpdated: new Date().toLocaleString()
-                };
-
-                // 创建分组结构
-                const groupedItems = items
-                        .filter(item => item.in_stock_level <= item.reorder_level)
-                        .reduce((acc, item) => {
-                            const storeKey = storeFilter === 'all' ? item.store_address : storeFilter;
-                            if (!acc[storeKey]) acc[storeKey] = {};
-                            if (!acc[storeKey][item.category]) acc[storeKey][item.category] = [];
-                            acc[storeKey][item.category].push(item);
-                            return acc;
-                        }, {});
-
-                warningContainer.innerHTML = `
-                        <div class="alert alert-info">
-                            Total Items: ${stats.totalItems} |
-                            Low Stock Items: ${stats.lowStockCount} |
-                            Last Updated: ${stats.lastUpdated}
-                        </div>
-                    `;
-
-                // Clear existing content first
-                warningContainer.innerHTML = '';
-
-                // Build accordion items for each store
-                for (const [storeKey, categories] of Object.entries(groupedItems)) {
-                    const storeName = storeKey.split(',')[0];
-                    const categoryItems = [];
-
-                    // Build category sections
-                    for (const [category, items] of Object.entries(categories)) {
-                        categoryItems.push(`
-                            <div class="category-group mb-4">
-                                <h5>${category}</h5>
-                                ${items.map(item => `
-                                <div class="warning-item d-flex justify-content-between align-items-center p-2 border-bottom">
-                                <div class="w-75">
-                                <div class="fw-bold">${item.name}</div>
-                                            <div class="text-muted small">
-                                                <span class="me-3">
-                                                    <i class="bi bi-box-seam"></i>
-                                                    Current: ${formatWithUnit(item.in_stock_level, item.unit)}
-                                                </span>
-                                                <span class="me-3">
-                                                    <i class="bi bi-exclamation-triangle"></i>
-                                                    Reorder: ${formatWithUnit(item.reorder_level, item.unit)}
-                                                </span>
-                                                <span class="me-3">
-                                                    <i class="bi bi-boxes"></i>
-                                                    Max: ${formatWithUnit(item.max_stock_level, item.unit)}
-                                                </span>
-                                                <span class="text-danger fw-bold">
-                                                    <i class="bi bi-cart-plus"></i>
-                                                        Restock: ${formatWithUnit(item.max_stock_level - item.in_stock_level,
-                                                                                    item.unit)}
-                                                </span>
-                                            </div>
-                                        </div>
-
-                                    </div>
-                                `).join('')
-                    }
-                </div>
-                    `);
-                    }
-
-                    // Create the full accordion item
-                    warningContainer.innerHTML += `
-                        <div class="accordion-item">
-                            <h2 class="accordion-header">
-                                <button class="accordion-button" type="button"
-                                        data-bs-toggle="collapse"
-                                        data-bs-target="#collapse-${storeName.replace(/\s+/g, '-')}">
-                                    ${storeName} ( Warnings )
-                                </button>
-                            </h2>
-                            <div id="collapse-${storeName.replace(/\s+/g, '-')}"
-                                 class="accordion-collapse collapse ">
-                                <div class="accordion-body">
-                                    ${categoryItems.join('')}
-                                </div>
-                            </div>
-                        </div>
-                    `;
-                }
-
-            } catch (error) {
-                console.error('Error fetching warnings:', error);
-                warningContainer.innerHTML = `
-                    <div class="alert alert-danger">
-                        Error loading warnings: ${error.message}
-                    </div>
-                `;
-            }
-        }
-
-        // Add safety checks for critical elements
-        document.addEventListener('DOMContentLoaded', () => {
-            if (!document.getElementById('warningListContainer')) {
-                console.error('Warning container element not found');
-            }
-
-            if (!document.getElementById('warningStoreFilter')) {
-                console.error('Store filter element not found');
-            }
-        });
 
         function renderWarningItem(item) {
             return `
@@ -1867,7 +2125,7 @@
                                 ${getStockStatusText(item)}
                             </span>
                         </td>
-                        <td>${new Date().toLocaleDateString()}</td>
+                        <td>${item.updated_at ? formatDateOnlyInLATime(item.updated_at) : 'Never Updated'}</td>
                         <td>
                             <button class="btn btn-sm btn-primary"
                                     onclick="openItemEditModal(${item.id})">
@@ -1922,33 +2180,10 @@
 
 
         // PDF Reports
-        async function downloadMultiStoreReport() {
+        async function generateStockWarningsReport() {
             try {
                 const storeFilter = document.getElementById('warningStoreFilter').value;
-                const response = await fetch(`/download_stock_report?store=${encodeURIComponent(storeFilter)}`);
-
-                if (!response.ok) throw new Error('Failed to generate report');
-
-                const blob = await response.blob();
-                const url = window.URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                const storePart = storeFilter === 'all'
-                        ? 'All_Stores'
-                        : storeFilter.split(',')[0].replace(/\s+/g, '_');
-                a.download = `Stock_Report_${storePart}_${new Date().toISOString().slice(0,10)}.pdf`;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-            } catch (error) {
-                alert('Error generating report: ' + error.message);
-            }
-        }
-
-        async function generateStoreDateReport() {
-            try {
-                const storeFilter = document.getElementById('dateReportStoreFilter').value;
-                const reportDate = document.getElementById('dateReportDate').value;
+                const reportDate = document.getElementById('warningDate').value;
 
                 if (!storeFilter) {
                     alert('Please select a store');
@@ -1960,7 +2195,7 @@
                     return;
                 }
 
-                const response = await fetch(`/download_store_date_report?store=${encodeURIComponent(storeFilter)}&date=${encodeURIComponent(reportDate)}`);
+                const response = await fetch(`/download_stock_warnings_report?store=${encodeURIComponent(storeFilter)}&date=${encodeURIComponent(reportDate)}`);
 
                 if (!response.ok) {
                     const errorData = await response.json();
@@ -1972,7 +2207,7 @@
                 const a = document.createElement('a');
                 a.href = url;
                 const storePart = storeFilter.split(',')[0].replace(/\s+/g, '_');
-                a.download = `Store_Date_Report_${storePart}_${reportDate}.pdf`;
+                a.download = `Stock_Warnings_Report_${storePart}_${reportDate}.pdf`;
                 document.body.appendChild(a);
                 a.click();
                 document.body.removeChild(a);
@@ -1982,6 +2217,8 @@
             }
         }
 
+
+
         // Initialization
         document.addEventListener('DOMContentLoaded', async () => {
             try {
@@ -1989,26 +2226,23 @@
                 // Get store filter elements from the actual HTML
                 const storeFilter = document.getElementById('checklistStoreFilter');
                 const warningFilter = document.getElementById('warningStoreFilter');
-                const dateReportFilter = document.getElementById('dateReportStoreFilter');
                 await initializeSuppliers();
                 const urlParams = new URLSearchParams(window.location.search);
                 const initialStore = urlParams.get('store') || 'all';
 
                 // Set all filter dropdowns
                 if (storeFilter) storeFilter.value = initialStore;
-                if (warningFilter) warningFilter.value = initialStore;
-                // Don't set date report filter to 'all' since it doesn't have that option
-                if (dateReportFilter && initialStore !== 'all') dateReportFilter.value = initialStore;
+                // Don't set warning filter to 'all' since it doesn't have that option
+                if (warningFilter && initialStore !== 'all') warningFilter.value = initialStore;
 
-                // Set today's date as default for date report
-                const dateReportDate = document.getElementById('dateReportDate');
-                if (dateReportDate) {
-                    dateReportDate.value = new Date().toISOString().slice(0, 10);
+                // Set today's date as default for warning reports
+                const warningDate = document.getElementById('warningDate');
+                if (warningDate) {
+                    warningDate.value = new Date().toISOString().slice(0, 10);
                 }
 
                 // Load initial data
                 await Promise.all([
-                    fetchStockWarnings(),
                     loadStoreCategories(initialStore),
                     loadPendingAccounts(),
                     loadAccountManagement(),
@@ -2137,7 +2371,7 @@
                                                             </span>
                                                             <span class="text-danger fw-bold">
                                                                 <i class="bi bi-cart-plus"></i>
-                                                                    Restock: ${formatWithUnit(item.max_stock_level - item.in_stock_level,
+                                                                    Restock: ${formatWithUnit(Math.max(0, item.max_stock_level - item.in_stock_level),
                                                                                               item.unit)}
                                                             </span>
                                                         </div>
@@ -2194,7 +2428,7 @@
                                 ${getStockStatusText(item)}
                             </span>
                         </td>
-                        <td>${new Date(item.updated_at).toLocaleDateString()}</td>
+                        <td>${formatDateOnlyInLATime(item.updated_at)}</td>
                         <td>
                             <button class="btn btn-sm btn-primary"
                                     onclick="openItemEditModal(${item.id})">
@@ -2467,7 +2701,7 @@
                 <tbody>
                 ${userHistory.records.map(r=>`
                   <tr>
-                    <td>${new Date(r.updated_at).toLocaleString()}</td>
+                    <td>${formatDateInLATime(r.updated_at)}</td>
                     <td>${r.category || 'N/A'}</td>
                     <td>${r.store_address.split(',')[0]}</td>
                     <td>

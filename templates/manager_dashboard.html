@@ -157,6 +157,25 @@
         return unit ? `${value} ${unit}` : value;
     }
 
+    // Simple date formatting function
+    function formatDateInLATime(dateString) {
+        try {
+            const date = new Date(dateString);
+            return date.toLocaleString('en-US', {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: false
+            });
+        } catch (error) {
+            console.error('Error formatting date:', error);
+            return dateString;
+        }
+    }
+
     document.addEventListener('DOMContentLoaded', () => {
         currentStore = "{{ current_store }}" || "Current Store";
         const storeDisplayName = currentStore.split(',')[0].trim();
@@ -329,7 +348,7 @@
                 <tbody>
                   ${user.records.map(r => `
                     <tr>
-                      <td>${new Date(r.updated_at).toLocaleString()}</td>
+                                              <td>${formatDateInLATime(r.updated_at)}</td>
                       <td>${r.category || 'N/A'}</td>
                       <td>${r.store_address.split(',')[0]}</td>
                         <td class="text-center">
@@ -433,7 +452,7 @@
             if (warnings.length > 0) {
                 // 构造每条警告 HTML
                 warningList.innerHTML = warnings.map(item => {
-                    const restockQty = item.max_stock_level - item.in_stock_level;
+                    const restockQty = Math.max(0, item.max_stock_level - item.in_stock_level);
                     return `
                         <div class="alert alert-danger d-flex justify-content-between align-items-center mb-2">
                             <div>
