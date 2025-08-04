@@ -2059,8 +2059,8 @@ def set_stock_level(item_id):
                 VALUES (?, ?, ?, ?, ?)
             ''', (user_id, item_id, item['in_stock_level'], new_stock_level, item['store_address']))
 
-            # NEW – keep only the 100 newest rows of this user
-            cursor.execute('''
+            # Keep only the configured maximum records per user
+            cursor.execute(f'''
                 DELETE FROM stock_updates
                       WHERE user_id = ?
                         AND id NOT IN (
@@ -2068,7 +2068,7 @@ def set_stock_level(item_id):
                               FROM stock_updates
                              WHERE user_id = ?
                           ORDER BY updated_at DESC
-                             LIMIT 100
+                             LIMIT {MAX_RECORDS_PER_USER}
                         )
             ''', (user_id, user_id))
 
@@ -2243,10 +2243,10 @@ def stock_update_history():
                     'restock'      : total_restock
                 })
 
-        # Sort records newest-first and limit to 2000 per user (increased for more history)
+        # Sort records newest-first and limit to configured maximum per user
         for usr in user_history.values():
             usr['records'].sort(key=lambda r: r['updated_at'], reverse=True)
-            usr['records'] = usr['records'][:2000]  # Increased limit to show more historical records
+            usr['records'] = usr['records'][:MAX_RECORDS_PER_USER]  # Use configured limit
             app.logger.info(f"User {usr['username']}: {len(usr['records'])} records after sorting and limiting")
 
         return jsonify(list(user_history.values()))
@@ -2510,10 +2510,10 @@ def debug_stock_history():
                 'restock'      : total_restock
             })
 
-    # Sort records newest-first and limit to 2000 per user (increased for more history)
+    # Sort records newest-first and limit to configured maximum per user
     for usr in user_history.values():
         usr['records'].sort(key=lambda r: r['updated_at'], reverse=True)
-        usr['records'] = usr['records'][:2000]  # Increased limit to show more historical records
+        usr['records'] = usr['records'][:MAX_RECORDS_PER_USER]  # Use configured limit
 
     debug_info = {
         'total_raw_records': len(raw_history),
