@@ -1,6 +1,6 @@
 import io
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import pytz
 
 from flask import Flask, render_template, request, redirect, url_for, jsonify, session, flash
@@ -221,12 +221,13 @@ def init_db():
         # Create default owner with valid store address
         cursor.execute('SELECT COUNT(*) FROM users')
         if cursor.fetchone()[0] == 0:
+            current_time_la = get_current_time_str()
             cursor.execute('''
                 INSERT INTO users (
                     username, password, employee_name, 
                     store_address, phone_number, email, 
-                    role, is_authorized
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    role, is_authorized, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 "owner",
                 "ownerpass",
@@ -235,7 +236,8 @@ def init_db():
                 "1234567890",
                 "owner@example.com",
                 "owner",
-                1
+                1,
+                current_time_la  # Use LA timezone
             ))
 
         # Ensure all owners are authorized
@@ -326,6 +328,7 @@ def register():
         try:
             with get_db_connection() as conn:
                 cursor = conn.cursor()
+                current_time_la = get_current_time_str()
                 cursor.execute('''
                     INSERT INTO users (
                         username, password, employee_name,
@@ -340,7 +343,8 @@ def register():
                     data['email'],
                     data['store_address'],
                     'employee',  # Default role
-                    0  # Requires authorization
+                    0,  # Requires authorization
+                    current_time_la  # Use LA timezone
                 ))
                 conn.commit()
                 return jsonify({
@@ -1972,6 +1976,7 @@ def create_account():
             if len(password) < 8 or not any(c.isupper() for c in password):
                 return jsonify({'message': 'Password must be at least 8 characters with uppercase'}), 400
 
+            current_time_la = get_current_time_str()
             cursor.execute('''
                 INSERT INTO users (
                     username, password, employee_name,
@@ -1986,7 +1991,8 @@ def create_account():
                 phone,
                 email,
                 data['role'],
-                1 if data['role'] == 'owner' else 0  # Auto-authorize owners
+                1 if data['role'] == 'owner' else 0,  # Auto-authorize owners
+                current_time_la  # Use LA timezone
             ))
 
             # Ensure at least one owner per store
@@ -2052,12 +2058,13 @@ def set_stock_level(item_id):
 
             # Allow stock level to exceed max_stock_level, but restock will be 0 in such cases
 
-            # Record stock update with store information
+            # Record stock update with store information (using LA timezone)
+            current_time_la = get_current_time_str()
             cursor.execute('''
                 INSERT INTO stock_updates 
-                (user_id, item_id, stock_before, stock_after, store_address)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (user_id, item_id, item['in_stock_level'], new_stock_level, item['store_address']))
+                (user_id, item_id, stock_before, stock_after, store_address, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (user_id, item_id, item['in_stock_level'], new_stock_level, item['store_address'], current_time_la))
 
             # Keep only the configured maximum records per user
             cursor.execute(f'''
@@ -2540,11 +2547,15 @@ def cleanup_stock_history():
             cursor.execute('''SELECT COUNT(*) FROM stock_updates''')
             initial_count = cursor.fetchone()[0]
 
-            # Delete records older than configured days using SQLite's time
-            cursor.execute(f'''
+            # Delete records older than configured days using LA timezone
+            # Calculate cutoff date in LA timezone
+            cutoff_date = get_current_time() - timedelta(days=DAYS_TO_KEEP_RECORDS)
+            cutoff_date_str = cutoff_date.strftime("%Y-%m-%d %H:%M:%S")
+            
+            cursor.execute('''
                 DELETE FROM stock_updates
-                WHERE updated_at < datetime('now', '-{DAYS_TO_KEEP_RECORDS} days')
-            ''')
+                WHERE updated_at < ?
+            ''', (cutoff_date_str,))
 
             # B. NEW – size based cleanup (configurable limit per user)
             cursor.execute(f'''
