@@ -2903,7 +2903,12 @@ def debug_stock_history_detailed():
 
 if __name__ == '__main__':
     scheduler.start()
-    app.run(debug=False)
+    # Only run Flask dev server if not in production
+    if os.environ.get('FLASK_ENV') != 'production':
+        app.run(debug=False, host='0.0.0.0', port=5000)
+    else:
+        print("Running in production mode. Use Gunicorn to serve the application.")
+        print("Start with: gunicorn -c gunicorn_config.py app:app")
 else:
     try:
         print("Running in production environment - attempting alternative scheduler configuration")
