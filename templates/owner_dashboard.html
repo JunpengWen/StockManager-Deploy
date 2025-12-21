@@ -526,20 +526,10 @@
                                 <input type="email" class="form-control" id="editEmail" required>
                             </div>
                             <div class="col-12">
-                                <label class="form-label">Current Password</label>
-                                <input type="text" class="form-control" id="currentPassword" readonly>
-                            </div>
-                            <div class="col-12">
-                                <div class="form-check">
-                                    <input class="form-check-input" type="checkbox" id="editResetPassword">
-                                    <label class="form-check-label" for="editResetPassword">
-                                        Reset Password
-                                    </label>
-                                </div>
-                            </div>
-                            <div class="col-12 password-field d-none">
-                                <label class="form-label">New Password</label>
-                                <input type="password" class="form-control" id="editPassword">
+                                <label class="form-label">Reset Password</label>
+                                <input type="text" class="form-control" id="editPassword" 
+                                       placeholder="Enter new password to reset">
+                                <small class="form-text text-muted">Leave empty to keep current password</small>
                             </div>
                             <div class="mb-3">
                                 <label class="form-label">Allowed Categories</label>
@@ -1601,8 +1591,7 @@
                 store_address   : document.getElementById('editStoreAddress').value,
                 phone_number    : document.getElementById('editPhone').value,
                 email           : document.getElementById('editEmail').value,
-                password        : document.getElementById('editResetPassword').checked
-                                  ? document.getElementById('editPassword').value : '',
+                password        : document.getElementById('editPassword').value || '',  // Empty string if no new password
                 allowed_categories : selectedCategories
             };
 
@@ -1998,9 +1987,7 @@
 
 
         // Event listeners
-        document.getElementById('editResetPassword').addEventListener('change', function() {
-            document.querySelector('.password-field').classList.toggle('d-none', !this.checked);
-        });
+        // Password reset field is now always visible, no toggle needed
 
 
 
@@ -2459,7 +2446,8 @@
                 document.getElementById('editStoreAddress').value = account.store_address;
                 document.getElementById('editPhone').value = account.phone_number;
                 document.getElementById('editEmail').value = account.email;
-                document.getElementById('currentPassword').value = account.password;
+                // Clear reset password field
+                document.getElementById('editPassword').value = '';
 
 
                 const boxArea = document.getElementById('editAllowedCategories');
@@ -2602,12 +2590,7 @@
             }
         });
 
-        const editResetPassword = document.getElementById('editResetPassword');
-        if (editResetPassword) { // Check element exists
-            editResetPassword.addEventListener('change', function() {
-                document.querySelector('.password-field').classList.toggle('d-none', !this.checked);
-            });
-        }
+        // Password reset field is now always visible, no toggle needed
 
         document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('checklistStoreFilter').addEventListener('change', function() {

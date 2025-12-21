@@ -98,12 +98,82 @@ StockManager-Deploy/
 
 ## 🔧 Configuration
 
-### Environment Variables (Recommended)
-Create a `.env` file in the project root:
-```env
-FLASK_SECRET_KEY=your-secure-secret-key-here
-FLASK_ENV=production
-```
+### Setting Flask Secret Key (REQUIRED for Production)
+
+The Flask secret key is used for session management and security. **You must set a strong secret key in production!**
+
+#### Option 1: Generate and Set Secret Key (Recommended)
+
+1. **Generate a secure secret key:**
+   ```bash
+   python setup_secret_key.py
+   ```
+   This will generate a secure random key and show you how to set it.
+
+2. **Set the environment variable:**
+
+   **Windows (PowerShell):**
+   ```powershell
+   $env:FLASK_SECRET_KEY="your-generated-secret-key-here"
+   ```
+
+   **Windows (Command Prompt):**
+   ```cmd
+   set FLASK_SECRET_KEY=your-generated-secret-key-here
+   ```
+
+   **Linux/Mac:**
+   ```bash
+   export FLASK_SECRET_KEY="your-generated-secret-key-here"
+   ```
+
+3. **For permanent setup (Windows):**
+   - Open System Properties → Environment Variables
+   - Add new System Variable:
+     - Variable name: `FLASK_SECRET_KEY`
+     - Variable value: `your-generated-secret-key-here`
+
+4. **For permanent setup (Linux/Mac):**
+   Add to `~/.bashrc` or `~/.zshrc`:
+   ```bash
+   export FLASK_SECRET_KEY="your-generated-secret-key-here"
+   ```
+
+#### Option 2: Using .env file (Alternative)
+
+1. Copy `.env.example` to `.env`:
+   ```bash
+   copy .env.example .env  # Windows
+   cp .env.example .env    # Linux/Mac
+   ```
+
+2. Generate a secret key:
+   ```bash
+   python -c "import secrets; print(secrets.token_hex(32))"
+   ```
+
+3. Edit `.env` and set your secret key:
+   ```env
+   FLASK_SECRET_KEY=your-generated-secret-key-here
+   FLASK_ENV=production
+   ```
+
+4. Install python-dotenv (if using .env file):
+   ```bash
+   pip install python-dotenv
+   ```
+
+   Then add to `app.py` at the top:
+   ```python
+   from dotenv import load_dotenv
+   load_dotenv()
+   ```
+
+#### ⚠️ Security Notes:
+- **Never commit `.env` file or secret keys to version control**
+- Use a different secret key for each environment (development, staging, production)
+- The app will auto-generate a temporary key if `FLASK_SECRET_KEY` is not set (development only)
+- For production, always set a strong, unique secret key
 
 ### Database Configuration
 The application uses SQLite by default. The database file is automatically created in the `instance/` directory.

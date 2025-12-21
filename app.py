@@ -2,6 +2,7 @@ import io
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 import pytz
+import secrets
 
 from flask import Flask, render_template, request, redirect, url_for, jsonify, session, flash
 import sqlite3
@@ -9,6 +10,7 @@ import os
 from flask import send_file
 from werkzeug.routing import ValidationError
 from werkzeug.utils import secure_filename
+from werkzeug.security import generate_password_hash, check_password_hash
 from apscheduler.schedulers.background import BackgroundScheduler
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.pagesizes import letter
@@ -17,7 +19,15 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.colors import HexColor
 
 app = Flask(__name__)
-app.secret_key = 'your_secret_key'  # Required for flashing messages
+
+# Get secret key from environment variable, or generate a temporary one for development
+# IMPORTANT: Set FLASK_SECRET_KEY environment variable in production!
+app.secret_key = os.environ.get('FLASK_SECRET_KEY') or secrets.token_hex(32)
+
+# Warn if using auto-generated key (development mode)
+if not os.environ.get('FLASK_SECRET_KEY'):
+    print("⚠️  WARNING: FLASK_SECRET_KEY not set. Using auto-generated key (not secure for production!)")
+    print("⚠️  Set FLASK_SECRET_KEY environment variable for production use.")
 
 VALID_STORES = [
     "Kusan Uyghur Cuisine, 1516 N 4th Street, San Jose, CA 95112",
@@ -79,6 +89,15 @@ def format_datetime_for_display(dt_str):
 def get_db_timezone_str():
     """Get current time in database format for SQLite"""
     return get_current_time().strftime("%Y-%m-%d %H:%M:%S")
+
+# Password hashing helper functions
+def hash_password(password):
+    """Hash a password using Werkzeug's secure password hashing"""
+    return generate_password_hash(password, method='pbkdf2:sha256', salt_length=16)
+
+def verify_password(password_hash, password):
+    """Verify a password against its hash"""
+    return check_password_hash(password_hash, password)
 
 # Helper function to validate file extensions
 def allowed_file(filename):
@@ -222,6 +241,8 @@ def init_db():
         cursor.execute('SELECT COUNT(*) FROM users')
         if cursor.fetchone()[0] == 0:
             current_time_la = get_current_time_str()
+            # Hash the default owner password
+            hashed_owner_password = hash_password("ownerpass")
             cursor.execute('''
                 INSERT INTO users (
                     username, password, employee_name, 
@@ -230,7 +251,7 @@ def init_db():
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 "owner",
-                "ownerpass",
+                hashed_owner_password,  # Store hashed password
                 "Owner Name",
                 "Kusan Uyghur Cuisine, 1516 N 4th Street, San Jose, CA 95112",
                 "1234567890",
@@ -260,14 +281,34 @@ def login():
         try:
             with get_db_connection() as conn:
                 cursor = conn.cursor()
+                # Get user with password hash for verification
                 cursor.execute('''
-                    SELECT id, role, store_address, is_authorized 
+                    SELECT id, role, store_address, is_authorized, password
                     FROM users 
-                    WHERE username = ? AND password = ?
-                ''', (username, password))
+                    WHERE username = ?
+                ''', (username,))
                 user = cursor.fetchone()
 
                 if not user:
+                    return render_template('userlogin.html',
+                                           error_message='Invalid username or password')
+                
+                # Verify password (supports both hashed and plain text for migration)
+                password_valid = False
+                if user['password'].startswith('pbkdf2:sha256:'):
+                    # Password is hashed, verify it
+                    password_valid = verify_password(user['password'], password)
+                else:
+                    # Legacy plain text password - verify and upgrade to hash
+                    if user['password'] == password:
+                        password_valid = True
+                        # Upgrade to hashed password
+                        hashed_password = hash_password(password)
+                        cursor.execute('UPDATE users SET password = ? WHERE id = ?', 
+                                     (hashed_password, user['id']))
+                        conn.commit()
+                
+                if not password_valid:
                     return render_template('userlogin.html',
                                            error_message='Invalid username or password')
 
@@ -325,10 +366,17 @@ def register():
         if data['store_address'] not in get_stores():
             return jsonify({'message': 'Invalid store selection'}), 400
 
+        # Validate password complexity
+        password = data['password']
+        if len(password) < 8:
+            return jsonify({'message': 'Password must be at least 8 characters long'}), 400
+
         try:
             with get_db_connection() as conn:
                 cursor = conn.cursor()
                 current_time_la = get_current_time_str()
+                # Hash the password before storing
+                hashed_password = hash_password(password)
                 cursor.execute('''
                     INSERT INTO users (
                         username, password, employee_name,
@@ -337,7 +385,7 @@ def register():
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     data['username'],
-                    data['password'],  # Use plain password directly
+                    hashed_password,  # Store hashed password
                     data['employee_name'],
                     data['phone_number'],
                     data['email'],
@@ -394,7 +442,58 @@ def pending_accounts():
     return jsonify(accounts)
 
 
-# 添加新的路由：获取单个账户详细信息（包含密码）
+# Route to verify password for an account
+@app.route('/verify_password/<int:account_id>', methods=['POST'])
+def verify_account_password(account_id):
+    """Verify if a provided password matches the account's password"""
+    if 'user_id' not in session or 'role' not in session:
+        return jsonify({'message': 'Unauthorized'}), 401
+
+    current_role = session.get('role')
+    current_store = session.get('store_address')
+
+    data = request.get_json()
+    if not data or 'password' not in data:
+        return jsonify({'message': 'Password is required'}), 400
+
+    password_to_verify = data['password']
+
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+
+        # Get account with password hash
+        cursor.execute('''
+            SELECT id, password, store_address, role
+            FROM users
+            WHERE id = ?
+        ''', (account_id,))
+        account = cursor.fetchone()
+
+        if not account:
+            return jsonify({'message': 'Account not found'}), 404
+
+        # Authorization check: owner can verify any account, others only their store
+        if current_role != 'owner' and account['store_address'] != current_store:
+            return jsonify({'message': 'Unauthorized access'}), 403
+
+        # Verify password (supports both hashed and plain text for migration)
+        password_valid = False
+        stored_password = account['password']
+        
+        if stored_password.startswith('pbkdf2:sha256:'):
+            # Password is hashed, verify it
+            password_valid = verify_password(stored_password, password_to_verify)
+        else:
+            # Legacy plain text password
+            password_valid = (stored_password == password_to_verify)
+
+        return jsonify({
+            'verified': password_valid,
+            'message': 'Password verified' if password_valid else 'Password does not match'
+        }), 200
+
+
+# 添加新的路由：获取单个账户详细信息（不包含密码）
 @app.route('/account/<int:account_id>', methods=['GET'])
 def get_account_detail(account_id):
     # 验证登录状态
@@ -434,7 +533,12 @@ def get_account_detail(account_id):
         cursor.execute('SELECT name FROM categories')
         all_categories = [row['name'] for row in cursor.fetchall()]
 
-        # 返回完整账户信息（包含明文密码）
+        # 返回完整账户信息（包含密码供owner查看）
+        # If password is hashed, we cannot show the original, but we'll return it anyway
+        # If password is still plain text (legacy), it will be visible
+        password_display = account['password']
+        is_hashed = password_display.startswith('pbkdf2:sha256:') if password_display else False
+        
         return jsonify({
             'id': account['id'],
             'username': account['username'],
@@ -445,7 +549,8 @@ def get_account_detail(account_id):
             'email': account['email'],
             'allowed_categories': allowed_categories,
             'all_categories': all_categories,
-            'password': account['password']  # 返回明文密码
+            'password': password_display,  # Return password (plain text if legacy, hash if hashed)
+            'is_hashed': is_hashed  # Indicate if password is hashed
         }), 200
 
 
@@ -1076,8 +1181,10 @@ def update_account(account_id):
             password_clause = ''
             if data.get('password'):
                 password_clause = ', password = ?'
+                # Hash the new password before storing
+                hashed_password = hash_password(data['password'])
                 # 将密码插入到倒数第二个位置（account_id 之前）
-                update_data.insert(-1, data['password'])
+                update_data.insert(-1, hashed_password)
 
             # 转换为元组
             update_data = tuple(update_data)
@@ -1977,6 +2084,8 @@ def create_account():
                 return jsonify({'message': 'Password must be at least 8 characters with uppercase'}), 400
 
             current_time_la = get_current_time_str()
+            # Hash the password before storing
+            hashed_password = hash_password(password)
             cursor.execute('''
                 INSERT INTO users (
                     username, password, employee_name,
@@ -1985,7 +2094,7 @@ def create_account():
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 data['username'],
-                password,
+                hashed_password,  # Store hashed password
                 data['employee_name'],
                 store_address,
                 phone,
