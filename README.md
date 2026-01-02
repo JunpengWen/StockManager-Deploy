@@ -69,6 +69,78 @@ python app.py
 
 The application will be available at `http://localhost:5000`
 
+## 🌐 Production Deployment
+
+### Amazon Lightsail Deployment (Ubuntu)
+
+This application is production-ready and can be deployed on Amazon Lightsail. See `DEPLOYMENT.md` for detailed instructions.
+
+#### Quick Deployment Steps:
+
+1. **Create a Lightsail Instance:**
+   - Platform: Linux/Unix
+   - Blueprint: Ubuntu 22.04 LTS
+   - Minimum: 1GB RAM recommended
+
+2. **Connect to your instance:**
+   ```bash
+   ssh ubuntu@your-instance-ip
+   ```
+
+3. **Upload your application files** to `/var/www/stockmanager/`
+
+4. **Run the automated deployment script:**
+   ```bash
+   cd /var/www/stockmanager
+   chmod +x deploy.sh
+   ./deploy.sh
+   ```
+
+   The script will automatically:
+   - Install all dependencies
+   - Set up virtual environment
+   - Configure Gunicorn service
+   - Set up Nginx reverse proxy
+   - Configure firewall
+   - Initialize the database
+
+5. **Access your application:**
+   - Visit `http://your-instance-ip` or `http://your-domain.com`
+
+#### Manual Deployment:
+
+For step-by-step manual deployment, see `DEPLOYMENT.md`.
+
+#### Post-Deployment:
+
+1. **Set up SSL/HTTPS (Recommended):**
+   ```bash
+   sudo apt install -y certbot python3-certbot-nginx
+   sudo certbot --nginx -d your-domain.com
+   ```
+
+2. **Configure backups:**
+   - See `DEPLOYMENT.md` for backup script setup
+
+3. **Change default password:**
+   - Login with default credentials and change immediately
+
+#### Service Management:
+
+```bash
+# Check application status
+sudo systemctl status stockmanager
+
+# View logs
+sudo journalctl -u stockmanager -f
+
+# Restart application
+sudo systemctl restart stockmanager
+
+# Restart Nginx
+sudo systemctl restart nginx
+```
+
 ## 🔑 Default Login
 
 After installation, you can log in with the default owner account:
@@ -84,6 +156,10 @@ StockManager-Deploy/
 ├── app.py                 # Main Flask application
 ├── requirements.txt       # Python dependencies
 ├── README.md             # This file
+├── DEPLOYMENT.md         # Detailed deployment guide
+├── deploy.sh             # Automated deployment script for Lightsail
+├── gunicorn_config.py    # Gunicorn production configuration
+├── setup_secret_key.py   # Secret key generation utility
 ├── instance/
 │   └── stock_manager.db  # SQLite database (created automatically)
 ├── static/
@@ -228,11 +304,24 @@ The application uses SQLite by default. The database file is automatically creat
 
 ## 🚨 Important Security Notes
 
-⚠️ **Current Security Considerations:**
-- Passwords are stored in plain text (should be hashed in production)
-- Default secret key should be changed
-- Consider implementing HTTPS for production deployment
-- Regular security updates recommended
+⚠️ **Security Features:**
+- ✅ **Passwords are hashed** using Werkzeug's PBKDF2 with SHA-256
+- ✅ **Session-based authentication** with secure session management
+- ✅ **Role-based access control** with store-level isolation
+- ⚠️ **Default secret key** should be changed in production (auto-generated if not set)
+- ⚠️ **HTTPS/SSL** should be enabled for production deployment (use Certbot)
+- ⚠️ **Default owner password** (`ownerpass`) must be changed after first login
+- ✅ **Input validation** and sanitization on all user inputs
+- ✅ **File upload security** with extension validation
+
+**Production Security Checklist:**
+- [ ] Strong `FLASK_SECRET_KEY` set in environment variables
+- [ ] Default owner password changed
+- [ ] SSL/HTTPS certificate installed
+- [ ] Firewall configured (UFW)
+- [ ] Regular backups configured
+- [ ] Database file permissions secured
+- [ ] System updates scheduled
 
 ## 🔧 Development
 
@@ -242,11 +331,27 @@ export FLASK_ENV=development
 python app.py
 ```
 
+The application will run on `http://localhost:5000` with debug mode enabled.
+
+### Production Mode
+
+For production, use Gunicorn:
+```bash
+gunicorn --config gunicorn_config.py app:app
+```
+
+Or use the systemd service (after deployment):
+```bash
+sudo systemctl start stockmanager
+```
+
 ### Database Reset
 ```bash
 rm instance/stock_manager.db
 python -c "from app import init_db; init_db()"
 ```
+
+**⚠️ Warning:** This will delete all data. Use with caution in production.
 
 ## 📝 API Endpoints
 
@@ -269,12 +374,37 @@ The application provides RESTful API endpoints for:
 
 [Add your license information here]
 
-## 🆘 Support
+## 🆘 Support & Troubleshooting
+
+### Common Issues
+
+**Application not accessible:**
+- Check Lightsail firewall settings (HTTP 80, HTTPS 443)
+- Verify service status: `sudo systemctl status stockmanager`
+- Check Nginx: `sudo systemctl status nginx`
+- View logs: `sudo journalctl -u stockmanager -n 50`
+
+**Database errors:**
+- Ensure database directory exists: `mkdir -p instance`
+- Reinitialize: `python -c "from app import init_db; init_db()"`
+- Check permissions: `sudo chmod -R 775 instance/`
+
+**Permission errors:**
+```bash
+sudo chown -R $USER:www-data /var/www/stockmanager
+sudo chmod -R 755 /var/www/stockmanager
+sudo chmod -R 775 /var/www/stockmanager/instance
+sudo chmod -R 775 /var/www/stockmanager/static
+```
+
+### Getting Help
 
 For issues and questions:
-1. Check the documentation
-2. Review existing issues
-3. Create a new issue with detailed information
+1. Check the documentation (`DEPLOYMENT.md` for deployment issues)
+2. Review application logs: `sudo journalctl -u stockmanager -f`
+3. Check Nginx logs: `sudo tail -f /var/log/nginx/error.log`
+4. Review existing issues
+5. Create a new issue with detailed information
 
 ## 🔄 Changelog
 
@@ -284,7 +414,23 @@ For issues and questions:
 - Role-based access control
 - PDF report generation
 - Automated stock tracking
+- Password hashing with PBKDF2
+- Amazon Lightsail deployment support
+- Automated deployment script
+- Gunicorn production configuration
+- Background task scheduler for data cleanup
 
 ---
 
-**Note**: This is a production-ready system but should be deployed with proper security measures in place.
+## 📚 Additional Resources
+
+- **Deployment Guide**: See `DEPLOYMENT.md` for detailed Lightsail deployment instructions
+- **Production Configuration**: `gunicorn_config.py` contains production server settings
+- **Deployment Script**: `deploy.sh` automates the entire deployment process
+
+**Note**: This is a production-ready system. Ensure you:
+- Set a strong `FLASK_SECRET_KEY` in production
+- Enable HTTPS/SSL
+- Change default passwords
+- Configure regular backups
+- Keep the system updated
