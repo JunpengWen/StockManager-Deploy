@@ -83,7 +83,7 @@ def format_datetime_for_display(dt_str):
         # Localize to app timezone
         dt = APP_TIMEZONE.localize(dt)
         return dt.strftime("%Y-%m-%d %H:%M:%S")
-    except:
+    except (ValueError, TypeError):
         return dt_str
 
 def get_db_timezone_str():
@@ -110,12 +110,65 @@ def get_db_connection():
     return conn
 
 
+def next_checklist_order(cursor, store_address, category):
+    """Next checklist_order for a new item in this store + category."""
+    cat_key = '' if category is None else category
+    cursor.execute(
+        '''
+        SELECT COALESCE(MAX(checklist_order), -1) + 1 FROM items
+        WHERE store_address = ? AND COALESCE(category, '') = ?
+        ''',
+        (store_address, cat_key),
+    )
+    return cursor.fetchone()[0]
+
+
+def migrate_checklist_order_column(cursor):
+    try:
+        cursor.execute(
+            "ALTER TABLE items ADD COLUMN checklist_order INTEGER NOT NULL DEFAULT 0"
+        )
+        print("Added 'checklist_order' column to items.")
+    except sqlite3.OperationalError:
+        pass
+
+
+def backfill_checklist_order(conn):
+    """Assign stable 0..n-1 order per (store_address, category) from id order."""
+    cursor = conn.cursor()
+    cursor.execute(
+        '''
+        SELECT DISTINCT store_address, COALESCE(category, '') AS cat
+        FROM items
+        '''
+    )
+    groups = cursor.fetchall()
+    for row in groups:
+        store = row['store_address']
+        cat = row['cat']
+        cursor.execute(
+            f'''
+            SELECT id FROM items
+            WHERE store_address = ? AND COALESCE(category, '') = ?
+            ORDER BY checklist_order, id
+            ''',
+            (store, cat),
+        )
+        ids = [r['id'] for r in cursor.fetchall()]
+        for i, item_id in enumerate(ids):
+            cursor.execute(
+                'UPDATE items SET checklist_order = ? WHERE id = ?',
+                (i, item_id),
+            )
+
+
 def init_db():
     # Create instance folder if it doesn't exist
     db_dir = os.path.dirname(DATABASE)
     os.makedirs(db_dir, exist_ok=True)
 
     with sqlite3.connect(DATABASE) as conn:
+        conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
         # Create tables with proper store_address fields
@@ -130,6 +183,7 @@ def init_db():
             supplier_id INTEGER,
             store_address TEXT NOT NULL,
             unit TEXT DEFAULT NULL,
+            checklist_order INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY (supplier_id) REFERENCES suppliers(id),
             UNIQUE(name, store_address)  -- Add composite constraint
         )''')
@@ -159,31 +213,6 @@ def init_db():
             print("Added 'is_authorized' column to existing table.")
         except sqlite3.OperationalError:
             print("'is_authorized' column already exists.")
-
-
-        # Create tables with proper store_address fields
-        cursor.execute('''CREATE TABLE IF NOT EXISTS items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,  
-            category TEXT,
-            max_stock_level INTEGER,
-            in_stock_level INTEGER,
-            reorder_level INTEGER,
-            picture TEXT,
-            supplier_id INTEGER,
-            store_address TEXT NOT NULL,
-            unit TEXT DEFAULT NULL,
-            FOREIGN KEY (supplier_id) REFERENCES suppliers(id),
-            UNIQUE(name, store_address)  -- Add composite constraint
-        )''')
-
-        # Keep original categories table structure
-        cursor.execute('''CREATE TABLE IF NOT EXISTS categories (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE
-        )''')
-
-
 
         cursor.execute('''CREATE TABLE IF NOT EXISTS stock_updates (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -263,6 +292,8 @@ def init_db():
 
         # Ensure all owners are authorized
         cursor.execute('UPDATE users SET is_authorized = 1 WHERE role = "owner"')
+        migrate_checklist_order_column(cursor)
+        backfill_checklist_order(conn)
         conn.commit()
 
 
@@ -696,18 +727,22 @@ def handle_owner_post_request():
                         return handle_error(f'Validation error for {store}: {str(e)}', 400)
 
                     try:
+                        chk = next_checklist_order(
+                            cursor, store, validated['category']
+                        )
                         cursor.execute('''
                             INSERT INTO items (
                                 name, category, max_stock_level,
                                 in_stock_level, reorder_level,
-                                picture, supplier_id, store_address, unit
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                picture, supplier_id, store_address, unit,
+                                checklist_order
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ''', (
                             validated['name'], validated['category'],
                             validated['max_stock_level'], validated['in_stock_level'],
                             validated['reorder_level'], picture_path,
                             validated['supplier_id'], store,
-                            validated['unit']
+                            validated['unit'], chk
                         ))
                         inserted += 1
                     except sqlite3.IntegrityError:
@@ -739,12 +774,16 @@ def handle_owner_post_request():
         # 数据库操作
         with get_db_connection() as conn:
             cursor = conn.cursor()
+            chk = next_checklist_order(
+                cursor, store_address, validated_data['category']
+            )
             cursor.execute('''
                 INSERT INTO items (
                     name, category, max_stock_level, 
                     in_stock_level, reorder_level, 
-                    picture, supplier_id, store_address,unit
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    picture, supplier_id, store_address, unit,
+                    checklist_order
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 validated_data['name'],
                 validated_data['category'],
@@ -754,7 +793,8 @@ def handle_owner_post_request():
                 picture_path,
                 validated_data['supplier_id'],
                 store_address,
-                validated_data['unit']
+                validated_data['unit'],
+                chk
             ))
             conn.commit()
 
@@ -1235,7 +1275,7 @@ def get_items():
     base = '''
         SELECT i.id,i.name,i.category,i.max_stock_level,i.in_stock_level,
                i.reorder_level,i.picture,s.name AS supplier,
-               i.store_address,i.unit,
+               i.store_address,i.unit,i.checklist_order,
                (SELECT MAX(updated_at) FROM stock_updates WHERE item_id = i.id) AS updated_at
           FROM items i
      LEFT JOIN suppliers s ON i.supplier_id=s.id
@@ -1259,6 +1299,11 @@ def get_items():
         base  += f" AND i.category IN ({','.join('?'*len(cats))})"
         params.extend(cats)
 
+    base += (
+        ' ORDER BY i.category IS NULL, i.category COLLATE NOCASE, '
+        'i.checklist_order, i.id'
+    )
+
     with get_db_connection() as conn:
         cur = conn.cursor()
         cur.execute(base, params)
@@ -1275,6 +1320,7 @@ def get_item(item_id):
                 i.id, i.name, i.category, i.max_stock_level, 
                 i.in_stock_level, i.reorder_level, 
                 i.picture, s.name AS supplier, i.supplier_id, i.store_address, i.unit,
+                i.checklist_order,
                 (SELECT MAX(updated_at) FROM stock_updates WHERE item_id = i.id) AS updated_at
             FROM items i
             LEFT JOIN suppliers s ON i.supplier_id = s.id
@@ -1284,6 +1330,241 @@ def get_item(item_id):
         if not item:
             return jsonify({'message': 'Item not found'}), 404
         return jsonify(dict(item))
+
+
+def _can_manage_checklist_store(store_address):
+    role = session.get('role')
+    if role == 'owner':
+        return True
+    if role == 'manager' and session.get('store_address') == store_address:
+        return True
+    return False
+
+
+def _resolve_supplier_id_by_name(cursor, supplier_name):
+    if supplier_name is None:
+        return None
+    sn = str(supplier_name).strip()
+    if not sn:
+        return None
+    cursor.execute('SELECT id FROM suppliers WHERE name = ?', (sn,))
+    row = cursor.fetchone()
+    if row:
+        return row['id']
+    cursor.execute(
+        'SELECT id FROM suppliers WHERE LOWER(TRIM(name)) = LOWER(?)',
+        (sn,),
+    )
+    row = cursor.fetchone()
+    return row['id'] if row else None
+
+
+@app.route('/items/<int:item_id>/checklist_move', methods=['POST'])
+def checklist_move_item(item_id):
+    if 'user_id' not in session or 'role' not in session:
+        return jsonify({'message': 'Unauthorized'}), 401
+    if session.get('role') not in ('owner', 'manager'):
+        return jsonify({'message': 'Forbidden'}), 403
+    data = request.get_json(silent=True) or {}
+    direction = (data.get('direction') or '').lower()
+    if direction not in ('up', 'down'):
+        return jsonify({'message': 'direction must be "up" or "down"'}), 400
+
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            'SELECT id, store_address, category FROM items WHERE id = ?',
+            (item_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({'message': 'Item not found'}), 404
+        if not _can_manage_checklist_store(row['store_address']):
+            return jsonify({'message': 'Forbidden'}), 403
+
+        cat_key = row['category'] if row['category'] is not None else ''
+        store = row['store_address']
+        cursor.execute(
+            '''
+            SELECT id FROM items
+            WHERE store_address = ? AND COALESCE(category, '') = ?
+            ORDER BY checklist_order, id
+            ''',
+            (store, cat_key),
+        )
+        ids = [r['id'] for r in cursor.fetchall()]
+        if item_id not in ids:
+            return jsonify({'message': 'Item not in group'}), 400
+        idx = ids.index(item_id)
+        if direction == 'up':
+            if idx == 0:
+                return jsonify({'message': 'Already at top'}), 400
+            ids[idx - 1], ids[idx] = ids[idx], ids[idx - 1]
+        else:
+            if idx >= len(ids) - 1:
+                return jsonify({'message': 'Already at bottom'}), 400
+            ids[idx + 1], ids[idx] = ids[idx], ids[idx + 1]
+        for i, iid in enumerate(ids):
+            cursor.execute(
+                'UPDATE items SET checklist_order = ? WHERE id = ?',
+                (i, iid),
+            )
+        conn.commit()
+    return jsonify({'message': 'Order updated', 'order': ids}), 200
+
+
+@app.route('/items/checklist_export', methods=['GET'])
+def checklist_export():
+    if 'user_id' not in session or 'role' not in session:
+        return jsonify({'message': 'Unauthorized'}), 401
+    if session.get('role') not in ('owner', 'manager'):
+        return jsonify({'message': 'Forbidden'}), 403
+    store = request.args.get('store', '').strip()
+    if not store:
+        return jsonify({'message': 'store query parameter is required'}), 400
+    if store not in get_stores():
+        return jsonify({'message': 'Invalid store'}), 400
+    if session.get('role') == 'manager' and store != session.get('store_address'):
+        return jsonify({'message': 'Forbidden'}), 403
+
+    category = request.args.get('category', '').strip()
+    category_filter = category if category else None
+
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        q = '''
+            SELECT i.name, i.category, i.max_stock_level, i.in_stock_level,
+                   i.reorder_level, i.unit, s.name AS supplier_name
+            FROM items i
+            LEFT JOIN suppliers s ON i.supplier_id = s.id
+            WHERE i.store_address = ?
+        '''
+        params = [store]
+        if category_filter is not None:
+            q += ' AND i.category = ?'
+            params.append(category_filter)
+        q += (
+            ' ORDER BY i.category IS NULL, i.category COLLATE NOCASE, '
+            'i.checklist_order, i.id'
+        )
+        cur.execute(q, params)
+        rows = cur.fetchall()
+
+    payload = {
+        'format': 'stockmanager-checklist-v1',
+        'source_store': store,
+        'exported_at': get_current_time_str(),
+        'items': [
+            {
+                'name': r['name'],
+                'category': r['category'],
+                'max_stock_level': r['max_stock_level'],
+                'in_stock_level': r['in_stock_level'],
+                'reorder_level': r['reorder_level'],
+                'unit': r['unit'],
+                'supplier_name': r['supplier_name'] or '',
+            }
+            for r in rows
+        ],
+    }
+    return jsonify(payload), 200
+
+
+@app.route('/items/checklist_import', methods=['POST'])
+def checklist_import():
+    if not request.is_json:
+        return jsonify({'message': 'JSON required'}), 400
+    if 'user_id' not in session or 'role' not in session:
+        return jsonify({'message': 'Unauthorized'}), 401
+    if session.get('role') not in ('owner', 'manager'):
+        return jsonify({'message': 'Forbidden'}), 403
+
+    data = request.get_json()
+    target_store = (data.get('target_store') or '').strip()
+    items_in = data.get('items')
+    if not target_store or target_store not in get_stores():
+        return jsonify({'message': 'Invalid or missing target_store'}), 400
+    if session.get('role') == 'manager' and target_store != session.get('store_address'):
+        return jsonify({'message': 'Forbidden'}), 403
+    if not isinstance(items_in, list) or not items_in:
+        return jsonify({'message': 'items must be a non-empty array'}), 400
+
+    created = 0
+    skipped = []
+    errors = []
+
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        for idx, it in enumerate(items_in):
+            if not isinstance(it, dict):
+                errors.append({'index': idx, 'error': 'not an object'})
+                continue
+            name = (it.get('name') or '').strip()
+            if len(name) < 2:
+                errors.append({'index': idx, 'error': 'invalid name'})
+                continue
+            cat_raw = it.get('category')
+            cat = (cat_raw.strip() if isinstance(cat_raw, str) else '') or 'Default'
+            cursor.execute(
+                'INSERT OR IGNORE INTO categories (name) VALUES (?)',
+                (cat,),
+            )
+            try:
+                mx = int(it.get('max_stock_level', 0))
+                ins = int(it.get('in_stock_level', 0))
+                rl = int(it.get('reorder_level', 0))
+            except (TypeError, ValueError):
+                errors.append({'index': idx, 'error': 'invalid numbers'})
+                continue
+            if mx <= 0:
+                errors.append({'index': idx, 'error': 'max_stock_level must be > 0'})
+                continue
+            if rl >= mx:
+                errors.append({'index': idx, 'error': 'reorder_level must be < max_stock_level'})
+                continue
+            unit_val = (it.get('unit') or '').strip() or None
+            if unit_val and unit_val not in get_units():
+                unit_val = None
+            sup_name = (it.get('supplier_name') or '').strip()
+            sid = _resolve_supplier_id_by_name(cursor, sup_name)
+            if not sid:
+                errors.append({
+                    'index': idx,
+                    'error': f'Unknown supplier: {sup_name or "(empty)"}',
+                })
+                continue
+
+            cursor.execute(
+                'SELECT 1 FROM items WHERE store_address = ? AND name = ?',
+                (target_store, name),
+            )
+            if cursor.fetchone():
+                skipped.append(name)
+                continue
+
+            chk = next_checklist_order(cursor, target_store, cat)
+            try:
+                cursor.execute(
+                    '''
+                    INSERT INTO items (
+                        name, category, max_stock_level, in_stock_level, reorder_level,
+                        picture, supplier_id, store_address, unit, checklist_order
+                    ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+                    ''',
+                    (name, cat, mx, ins, rl, sid, target_store, unit_val, chk),
+                )
+                created += 1
+            except sqlite3.IntegrityError:
+                skipped.append(name)
+
+        conn.commit()
+
+    return jsonify({
+        'message': f'Import finished: {created} created, {len(skipped)} skipped',
+        'created': created,
+        'skipped_duplicate_names': skipped,
+        'errors': errors,
+    }), 200
 
 
 @app.route('/delete_item/<int:item_id>', methods=['POST'])
@@ -2647,59 +2928,66 @@ def logout():
     return redirect(url_for('login'))
 
 def cleanup_stock_history():
+    """Remove old stock_updates rows; rollback on failure. Outer except handles connect failures."""
     try:
         with get_db_connection() as conn:
-            cursor = conn.cursor()
-            conn.execute('BEGIN IMMEDIATE')
+            try:
+                cursor = conn.cursor()
+                conn.execute('BEGIN IMMEDIATE')
 
-            # Get pre-cleanup metrics
-            cursor.execute('''SELECT COUNT(*) FROM stock_updates''')
-            initial_count = cursor.fetchone()[0]
+                cursor.execute('''SELECT COUNT(*) FROM stock_updates''')
+                initial_count = cursor.fetchone()[0]
 
-            # Delete records older than configured days using LA timezone
-            # Calculate cutoff date in LA timezone
-            cutoff_date = get_current_time() - timedelta(days=DAYS_TO_KEEP_RECORDS)
-            cutoff_date_str = cutoff_date.strftime("%Y-%m-%d %H:%M:%S")
-            
-            cursor.execute('''
-                DELETE FROM stock_updates
-                WHERE updated_at < ?
-            ''', (cutoff_date_str,))
+                cutoff_date = get_current_time() - timedelta(days=DAYS_TO_KEEP_RECORDS)
+                cutoff_date_str = cutoff_date.strftime("%Y-%m-%d %H:%M:%S")
 
-            # B. NEW – size based cleanup (configurable limit per user)
-            cursor.execute(f'''
-                DELETE FROM stock_updates
-                      WHERE id IN (
-                          SELECT id FROM (
-                              SELECT id,
-                                     ROW_NUMBER() OVER
-                                         (PARTITION BY user_id
-                                          ORDER BY updated_at DESC) AS rn
-                                FROM stock_updates
+                cursor.execute(
+                    '''
+                    DELETE FROM stock_updates
+                    WHERE updated_at < ?
+                    ''',
+                    (cutoff_date_str,),
+                )
+                deleted_age = cursor.rowcount
+
+                cursor.execute(
+                    f'''
+                    DELETE FROM stock_updates
+                          WHERE id IN (
+                              SELECT id FROM (
+                                  SELECT id,
+                                         ROW_NUMBER() OVER
+                                             (PARTITION BY user_id
+                                              ORDER BY updated_at DESC) AS rn
+                                    FROM stock_updates
+                              )
+                              WHERE rn > {MAX_RECORDS_PER_USER}
                           )
-                          WHERE rn > {MAX_RECORDS_PER_USER}
-                      )
-            ''')
+                    '''
+                )
+                deleted_cap = cursor.rowcount
 
-            # Get cleanup metrics
-            deleted_count = cursor.rowcount
-            cursor.execute('''SELECT COUNT(*) FROM stock_updates''')
-            remaining_count = cursor.fetchone()[0]
+                cursor.execute('''SELECT COUNT(*) FROM stock_updates''')
+                remaining_count = cursor.fetchone()[0]
 
-            conn.commit()
+                conn.commit()
 
-            app.logger.info(
-                f"Database cleanup completed. Removed {deleted_count} entries. "
-                f"Initial: {initial_count}, Remaining: {remaining_count}. "
-                f"Config: {DAYS_TO_KEEP_RECORDS} days retention, {MAX_RECORDS_PER_USER} max records per user"
-            )
-
-    except sqlite3.Error as e:
-        app.logger.error(f"Database error during 30-day cleanup: {str(e)}")
-        conn.rollback()
+                deleted_total = deleted_age + deleted_cap
+                app.logger.info(
+                    f"Database cleanup completed. Removed {deleted_total} entries "
+                    f"(age: {deleted_age}, cap: {deleted_cap}). "
+                    f"Initial: {initial_count}, Remaining: {remaining_count}. "
+                    f"Config: {DAYS_TO_KEEP_RECORDS} days retention, "
+                    f"{MAX_RECORDS_PER_USER} max records per user"
+                )
+            except sqlite3.Error as e:
+                conn.rollback()
+                app.logger.error(f"Database error during 30-day cleanup: {str(e)}")
+            except Exception as e:
+                conn.rollback()
+                app.logger.error(f"Unexpected error in 30-day cleanup: {str(e)}")
     except Exception as e:
-        app.logger.error(f"Unexpected error in 30-day cleanup: {str(e)}")
-        conn.rollback()
+        app.logger.error(f"Stock cleanup failed (could not open DB or transaction): {str(e)}")
 
 # TEMPORARILY DISABLE CLEANUP TO TEST
 @app.route('/debug/cleanup_status')
@@ -2785,17 +3073,8 @@ def check_authorization():
 
 
 @app.after_request
-def add_header(response):
-    # Prevent caching of sensitive pages
-    if request.path.startswith('/owner_dashboard'):
-        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
-        response.headers['Pragma'] = 'no-cache'
-        response.headers['Expires'] = '0'
-    return response
-
-
-@app.after_request
-def add_header(response):
+def add_no_cache_headers(response):
+    """Single handler: avoid duplicate after_request registration and ensure no sensitive caching."""
     response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
     response.headers['Pragma'] = 'no-cache'
     response.headers['Expires'] = '0'

@@ -354,11 +354,28 @@
                     </select>
                 </div>
             </div>
+            <div class="row g-2 align-items-center mt-2 mb-1">
+                <div class="col-auto">
+                    <button type="button" class="btn btn-outline-secondary btn-sm" id="btnCopyChecklist"
+                            onclick="copyChecklistToClipboard()" title="Copy checklist JSON for the selected store (and category filter if any)">
+                        <i class="bi bi-clipboard"></i> Copy checklist
+                    </button>
+                </div>
+                <div class="col-auto">
+                    <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#checklistImportModal">
+                        <i class="bi bi-clipboard-data"></i> Import checklist
+                    </button>
+                </div>
+                <div class="col-12 col-md text-muted small">
+                    Reorder (↑↓) applies per category; choose a store and category. Import creates items on the target store (skips duplicate names).
+                </div>
+            </div>
             <div id="multiStoreItemSection" class="mt-3 d-none">
                 <div class="table-responsive">
                     <table class="table table-striped">
                         <thead>
                             <tr>
+                                <th style="width:88px;">Order</th>
                                 <th>Item</th>
                                 <th>Category</th>
                                 <th>Stock</th>
@@ -730,9 +747,33 @@
       </div></div>
     </div>
 
-
-
-
+    <div class="modal fade" id="checklistImportModal" tabindex="-1" aria-labelledby="checklistImportModalLabel">
+      <div class="modal-dialog modal-lg"><div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="checklistImportModalLabel">Import checklist</h5>
+          <button class="btn-close" data-bs-dismiss="modal" type="button"></button>
+        </div>
+        <div class="modal-body">
+          <p class="small text-muted">Paste JSON from <strong>Copy checklist</strong> (or the same structure). Suppliers must already exist by name. Duplicate item names for the target store are skipped.</p>
+          <div class="mb-3">
+            <label class="form-label" for="importTargetStore">Target store</label>
+            <select class="form-select" id="importTargetStore">
+              {% for store in valid_stores %}
+              <option value="{{ store }}">{{ store.split(',')[0] }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="mb-3">
+            <label class="form-label" for="checklistImportTextarea">Checklist JSON</label>
+            <textarea class="form-control font-monospace" id="checklistImportTextarea" rows="12" placeholder='{"format":"stockmanager-checklist-v1","items":[...]}'></textarea>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+          <button type="button" class="btn btn-primary" onclick="submitChecklistImport()">Import items</button>
+        </div>
+      </div></div>
+    </div>
 
     <!--  exit section -->
     <div class="mt-3 text-center">
@@ -2102,8 +2143,17 @@
                     console.error('Inventory table body not found');
                     return;
                 }
+                const showReorder = storeAddress !== 'all' && !!category;
                 tbody.innerHTML = filteredItems.map(item => `
                     <tr data-item-id="${item.id}">
+                        <td class="text-nowrap">
+                            ${showReorder ? `
+                            <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1" title="Move up"
+                                    onclick="moveChecklistItem(${item.id}, 'up')"><i class="bi bi-chevron-up"></i></button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1" title="Move down"
+                                    onclick="moveChecklistItem(${item.id}, 'down')"><i class="bi bi-chevron-down"></i></button>
+                            ` : '<span class="text-muted small">—</span>'}
+                        </td>
                         <td>${item.name}</td>
                         <td>${item.category}</td>
                         <td>${formatWithUnit(item.in_stock_level, item.unit)}</td>
@@ -2129,6 +2179,107 @@
                 document.getElementById('multiStoreItemSection').classList.remove('d-none');
             } catch (error) {
                 console.error('Error loading items:', error);
+            }
+        }
+
+        async function moveChecklistItem(itemId, direction) {
+            try {
+                const res = await fetch(`/items/${itemId}/checklist_move`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ direction })
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    alert(data.message || 'Could not move item');
+                    return;
+                }
+                await loadStoreItems();
+            } catch (e) {
+                console.error(e);
+                alert('Could not move item: ' + e.message);
+            }
+        }
+
+        async function copyChecklistToClipboard() {
+            const store = document.getElementById('checklistStoreFilter').value;
+            const category = document.getElementById('ownerCategoryDropdown').value;
+            if (!store || store === 'all') {
+                alert('Select a single store (not "All Stores") to copy a checklist.');
+                return;
+            }
+            let url = `/items/checklist_export?store=${encodeURIComponent(store)}`;
+            if (category) {
+                url += `&category=${encodeURIComponent(category)}`;
+            }
+            try {
+                const res = await fetch(url);
+                const data = await res.json();
+                if (!res.ok) {
+                    alert(data.message || 'Export failed');
+                    return;
+                }
+                const text = JSON.stringify(data, null, 2);
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    await navigator.clipboard.writeText(text);
+                    alert('Checklist JSON copied to clipboard.');
+                } else {
+                    prompt('Copy this text (Ctrl+C):', text);
+                }
+            } catch (e) {
+                console.error(e);
+                alert('Copy failed: ' + e.message);
+            }
+        }
+
+        async function submitChecklistImport() {
+            const target = document.getElementById('importTargetStore').value;
+            const raw = document.getElementById('checklistImportTextarea').value.trim();
+            if (!target) {
+                alert('Select a target store.');
+                return;
+            }
+            if (!raw) {
+                alert('Paste checklist JSON first.');
+                return;
+            }
+            let parsed;
+            try {
+                parsed = JSON.parse(raw);
+            } catch (e) {
+                alert('Invalid JSON: ' + e.message);
+                return;
+            }
+            const items = parsed.items != null ? parsed.items : (Array.isArray(parsed) ? parsed : null);
+            if (!Array.isArray(items) || items.length === 0) {
+                alert('JSON must contain an "items" array (or be an array of item objects).');
+                return;
+            }
+            try {
+                const res = await fetch('/items/checklist_import', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ target_store: target, items })
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    alert(data.message || 'Import failed');
+                    return;
+                }
+                let msg = data.message || 'Import complete.';
+                if (data.errors && data.errors.length) {
+                    msg += '\n\nIssues:\n' + data.errors.slice(0, 8).map(e => JSON.stringify(e)).join('\n');
+                }
+                alert(msg);
+                const modalEl = document.getElementById('checklistImportModal');
+                if (modalEl && window.bootstrap) {
+                    bootstrap.Modal.getInstance(modalEl)?.hide();
+                }
+                document.getElementById('checklistImportTextarea').value = '';
+                await loadStoreCategories(document.getElementById('checklistStoreFilter').value);
+            } catch (e) {
+                console.error(e);
+                alert('Import failed: ' + e.message);
             }
         }
 
@@ -2380,55 +2531,12 @@
         }
     }
 
-        // Inventory Checklist System
+        // Inventory Checklist System — delegate to same path as initial load (order column + actions)
         async function loadChecklistItems() {
-            const section = document.getElementById('multiStoreItemSection');
-            const tbody = document.getElementById('multiStoreItemList');
-            section.classList.add('d-none');
-            tbody.innerHTML = '<tr><td colspan="6" class="text-center">Loading...</td></tr>';
-
-            try {
-                const [itemsRes, categoriesRes] = await Promise.all([
-                    fetch(`/items?store=${encodeURIComponent(currentStoreContext)}`),
-                    fetch('/categories')
-                ]);
-
-                const items = await itemsRes.json();
-                const categories = await categoriesRes.json();
-
-                // Update Category Filter
-                const categoryDropdown = document.getElementById('ownerCategoryDropdown');
-                categoryDropdown.innerHTML = `
-                    <option value="">All Categories</option>
-                    ${categories.map(c => `<option value="${c}">${c}</option>`).join('')}
-                `;
-                categoryDropdown.disabled = false;
-
-                // Populate Items Table
-                tbody.innerHTML = items.map(item => `
-                    <tr data-item-id="${item.id}">
-                        <td>${item.name}</td>
-                        <td>${item.category}</td>
-                        <td>${formatWithUnit(item.in_stock_level, item.unit)}</td>
-                        <td>
-                            <span class="badge ${getStockStatusClass(item)}">
-                                ${getStockStatusText(item)}
-                            </span>
-                        </td>
-                        <td>${formatDateOnlyInLATime(item.updated_at)}</td>
-                        <td>
-                            <button class="btn btn-sm btn-primary"
-                                    onclick="openItemEditModal(${item.id})">
-                                Edit
-                            </button>
-                        </td>
-                    </tr>
-                `).join('');
-
-                section.classList.remove('d-none');
-            } catch (error) {
-                tbody.innerHTML = '<tr><td colspan="6" class="text-danger">Error loading items</td></tr>';
-            }
+            const storeFilter = document.getElementById('checklistStoreFilter');
+            if (!storeFilter) return;
+            currentStoreContext = storeFilter.value;
+            await loadStoreCategories(storeFilter.value);
         }
 
         async function openEditModal(accountId) {
